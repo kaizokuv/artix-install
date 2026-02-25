@@ -14,24 +14,22 @@ fi
 # ------------------------
 # Cleanup previous mounts
 # ------------------------
+
 echo "[*] Unmounting any leftover mounts on $DISK..."
 
-# Unmount /mnt first (previous failed install)
+
 umount -R /mnt 2>/dev/null || true
 rm -rf /mnt
 mkdir -p /mnt/
 
-# Unmount all partitions on the target disk
 for part in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
     echo "[*] Unmounting /dev/$part ..."
     umount -R "/dev/$part" 2>/dev/null || true
 done
 
-# Kill lingering processes using the disk
 echo "[*] Killing processes using $DISK ..."
 fuser -k "$DISK" 2>/dev/null || true
 
-# Double-check mounts
 if mount | grep -q "$DISK"; then
     echo "[!] Some partitions are still mounted. Attempting lazy unmount..."
     for part in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
@@ -41,27 +39,19 @@ fi
 
 echo "[*] Cleanup complete. Proceeding with partitioning..."
 
-# ------------------------
-# Select disk
-# ------------------------
+echo "[*] Cleanup complete. Proceeding with partitioning..."
+
+echo "[*] Cleanup complete. Proceeding with partitioning..."
+
 DISK=$(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme" | \
 whiptail --menu "Select disk for installation" 20 80 10 \
 $(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme") \
 3>&1 1>&2 2>&3)
 
-# ------------------------
-# Swap size
-# ------------------------
 SWAPSIZE=$(whiptail --inputbox "Enter swap size (e.g., 8G):" 10 60 "8G" 3>&1 1>&2 2>&3)
 
-# ------------------------
-# Confirm wipe
-# ------------------------
 whiptail --yesno "This will erase all data on $DISK. Continue?" 12 60 || exit 1
 
-# ------------------------
-# Partitioning
-# ------------------------
 printf "label: gpt\n,1G,U\n,200G,L\n,%s,S\n,,L\n" "$SWAPSIZE" | sfdisk "$DISK"
 
 echo "[*] Partitioning done."
