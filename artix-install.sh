@@ -1,22 +1,41 @@
 #!/bin/bash
+DISK=$(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme" | \
+whiptail --menu "Select disk" 20 60 10 \
+$(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme") \
+3>&1 1>&2 2>&3)
 
-set -e
+SWAPSIZE=$(whiptail --inputbox "Swap size:" 10 60 "8G" 3>&1 1>&2 2>&3)
 
-DISK="/dev/nvme0n1"
-EFI="${DISK}p1"
-ROOT="${DISK}p2"
+whiptail --yesno "Erase $DISK ?" 10 60 || exit 1
 
-echo "[*] Formatting partitions..."
+printf "label: gpt\n,1G,U\n,200G,L\n,%s,S\n,,L\n" "$SWAPSIZE" | sfdisk "$DISK"
 
-mkfs.xfs -L ROOT "$ROOT" -f
-mkfs.fat -F 32 "$EFI"
-fatlabel "$EFI" ESP
+echo "[*] Partitioning.."
 
-echo "[*] Mounting partitions..."
+if [[ "$DISK" == *"nvme"* ]]; then
+    EFI="${DISK}p1"
+    ROOT="${DISK}p2"
+    SWAP="${DISK}p3"
+    HOME="${DISK}p4"
+else
+    EFI="${DISK}1"
+    ROOT="${DISK}2"
+    SWAP="${DISK}3"
+    HOME="${DISK}4"
+fi
+
+
+mkfs.fat -F32 "$EFI"
+mkfs.xfs -f "$ROOT"
+mkfs.xfs -f "$HOME"
+mkswap "$SWAP"
+swapon "$SWAP"
 
 mount "$ROOT" /mnt
-mkdir -p /mnt/boot
+mkdir /mnt/boot
 mount "$EFI" /mnt/boot
+mkdir /mnt/home
+mount "$HOME" /mnt/home
 
 echo "[*] Starting network time..."
 dinitctl start ntpd || true
@@ -35,28 +54,50 @@ grub \
 efibootmgr \
 os-prober \
 vim \
-fastfetch
+fastfetch \
+networkmanager \
+networkmanager-dinit \
+opendoas \
+git \
+pipewire-alsa \
+pipewire-pulse \
+pipewire-jack
+wireplumber \
+rtkit
 
 echo "[*] Generating fstab..."
 
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-echo "[*] Configuring system..."
-
-artix-chroot /mnt /bin/bash <<EOF
+artix-chroot /mnt /bin/bash <<'EOF'
 
 set -e
+export TERM=xterm-256color
 
-echo "[*] Setting locale..."
+echo "[*] Selecting locale..."
 
-sed -i 's/#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+LOCALE_LIST=$(grep 'UTF-8' /etc/locale.gen | sed 's/^#//' | awk '{print $1 " locale"}')
+
+LOCALE=$(whiptail \
+--backtitle "Artix Linux Minimal Installer v1.0" \
+--title "Step 3: Locale Selection" \
+--menu "Select your locale:" \
+20 60 15 \
+$LOCALE_LIST \
+3>&1 1>&2 2>&3)
+
+echo "[*] Applying locale $LOCALE"
+
+sed -i "s/^#$LOCALE UTF-8/$LOCALE UTF-8/" /etc/locale.gen
 locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
+echo "LANG=$LOCALE" > /etc/locale.conf
 
 echo "[*] Enabling services..."
 
 dinitctl enable elogind
 dinitctl enable ntpd
+dinitctl enable NetworkManager
+dinitctl enable rtkit
 
 echo "[*] Configuring GRUB..."
 
@@ -70,8 +111,16 @@ grub-install \
 
 grub-mkconfig -o /boot/grub/grub.cfg
 
-echo "[*] Set root password NOW:"
+echo "[*] Set root password:"
 passwd
+
+USERNAME=$(whiptail --inputbox "Enter your username:" 10 60 "user" 3>&1 1>&2 2>&3)
+useradd -m -G wheel -s /bin/bash "$USERNAME"
+usermod -aG audio,video,realtime "$USERNAME"
+echo "permit :wheel" > /etc/doas.conf
+
+echo "[*] Set password for $USERNAME"
+passwd "$USERNAME"
 
 EOF
 
