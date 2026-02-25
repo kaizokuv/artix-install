@@ -100,10 +100,11 @@ sed -i "s/^#\$LOCALE UTF-8/\$LOCALE UTF-8/" /etc/locale.gen
 locale-gen
 echo "LANG=\$LOCALE" > /etc/locale.conf
 
-dinitctl enable elogind
-dinitctl enable ntpd
-dinitctl enable NetworkManager
-dinitctl enable rtkit
+mkdir -p /etc/dinit.d/boot.d
+ln -sf /etc/dinit.d/elogind /etc/dinit.d/boot.d/elogind
+ln -sf /etc/dinit.d/ntpd /etc/dinit.d/boot.d/ntpd
+ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/boot.d/NetworkManager
+ln -sf /etc/dinit.d/rtkit-daemon /etc/dinit.d/boot.d/rtkit-daemon
 
 sed -i 's/#GRUB_DISABLE_OS_PROBER=false/GRUB_DISABLE_OS_PROBER=false/' /etc/default/grub || true
 echo 'GRUB_DISABLE_OS_PROBER=false' >> /etc/default/grub
