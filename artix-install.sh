@@ -1,10 +1,21 @@
 #!/bin/bash
-set -e # Exit immediately if any command fails
+set -e 
 
 # --- PRE-FLIGHT ---
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root."
     exit 1
+fi
+
+# --- NETWORK CHECK ---
+echo "Checking internet connection..."
+if ! ping -c 1 artixlinux.org &>/dev/null; then
+    whiptail --title "Network Offline" --msgbox "Internet not detected. Launching nmtui to connect..." 10 60
+    nmtui
+    if ! ping -c 1 artixlinux.org &>/dev/null; then
+        echo "Network still offline. Exiting."
+        exit 1
+    fi
 fi
 
 # --- USER INPUT ---
@@ -18,12 +29,12 @@ SWAPSIZE=$(whiptail --inputbox "Enter swap size (e.g., 8G):" 10 60 "8G" 3>&1 1>&
 USERNAME=$(whiptail --inputbox "Enter username:" 10 60 "user" 3>&1 1>&2 2>&3)
 PASSWORD=$(whiptail --passwordbox "Enter password for both root and $USERNAME:" 10 60 3>&1 1>&2 2>&3)
 
-# --- THE CLEANUP (Standard Tools Only) ---
-echo "Nuking existing partition metadata..."
+# --- THE CLEANUP ---
+echo "Nuking partition metadata..."
 swapoff -a || true
 umount -R /mnt 2>/dev/null || true
 
-# Wipe signatures and zero out headers (Primary and Backup GPT)
+# Zero out primary and backup GPT headers
 wipefs -af "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=1 conv=notrunc
 DISK_SIZE=$(blockdev --getsize64 "$DISK")
@@ -31,13 +42,13 @@ dd if=/dev/zero of="$DISK" bs=1M count=1 seek=$(( (DISK_SIZE / 1048576) - 1 )) c
 
 # --- PARTITIONING ---
 echo "Creating new partition table..."
-# EFI: 1G, Swap: $SWAPSIZE, Root: Remainder
 printf "label: gpt\n,1G,U\n,%s,S\n,,L\n" "$SWAPSIZE" | sfdisk --force "$DISK"
 
+# REPLACEMENT FOR PARTPROBE
+blockdev --rereadpt "$DISK" || true
 udevadm settle
-partprobe "$DISK"
+sleep 2 
 
-# Identify partition names
 if [[ "$DISK" == *"nvme"* ]]; then
     EFI="${DISK}p1"; SWAP="${DISK}p2"; ROOT="${DISK}p3"
 else
@@ -45,7 +56,6 @@ else
 fi
 
 # --- FORMATTING & MOUNTING ---
-echo "Formatting and mounting..."
 mkfs.fat -F32 "$EFI"
 mkswap -f "$SWAP"
 swapon "$SWAP"
@@ -56,8 +66,7 @@ mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
 # --- BASESTRAP ---
-echo "Starting basestrap (watch for errors here)..."
-# We add artix-keyring just in case the ISO's keys are old
+echo "Updating keyrings and starting basestrap..."
 pacman -Sy --noconfirm artix-keyring archlinux-keyring || true
 
 basestrap /mnt base base-devel dinit elogind-dinit linux-zen linux-firmware \
@@ -66,20 +75,16 @@ intel-ucode grub efibootmgr networkmanager-dinit dbus-dinit opendoas
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # --- CHROOT CONFIG ---
-echo "Entering chroot for final configuration..."
 artix-chroot /mnt /bin/bash <<EOF
 set -e
-# Bootloader
 grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=grub
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Services
 mkdir -p /etc/dinit.d/boot.d
 for svc in dbus elogind NetworkManager; do
     ln -sf /etc/dinit.d/\$svc /etc/dinit.d/boot.d/\$svc
 done
 
-# User setup
 echo "root:$PASSWORD" | chpasswd
 useradd -m -G wheel -s /bin/bash "$USERNAME"
 echo "$USERNAME:$PASSWORD" | chpasswd
