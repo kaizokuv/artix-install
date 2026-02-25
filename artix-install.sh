@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e # Exit immediately if a command exits with a non-zero status
+set -e # Exit immediately if any command fails
 
 # --- PRE-FLIGHT ---
 if [[ $EUID -ne 0 ]]; then
@@ -7,52 +7,66 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# --- DISK SELECTION ---
+# --- USER INPUT ---
 DISK=$(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme" | \
 whiptail --menu "Select installation disk" 20 80 10 \
 $(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme") 3>&1 1>&2 2>&3)
 
-SWAPSIZE=$(whiptail --inputbox "Enter swap size (e.g., 8G):" 10 60 "8G" 3>&1 1>&2 2>&3)
+[[ -z "$DISK" ]] && exit 1
 
-# --- THE CLEANUP (Preventing the Read-Only error) ---
-echo "Clearing existing mounts and partition signatures..."
+SWAPSIZE=$(whiptail --inputbox "Enter swap size (e.g., 8G):" 10 60 "8G" 3>&1 1>&2 2>&3)
+USERNAME=$(whiptail --inputbox "Enter username:" 10 60 "user" 3>&1 1>&2 2>&3)
+PASSWORD=$(whiptail --passwordbox "Enter password for both root and $USERNAME:" 10 60 3>&1 1>&2 2>&3)
+
+# --- THE CLEANUP (Standard Tools Only) ---
+echo "Nuking existing partition metadata..."
 swapoff -a || true
 umount -R /mnt 2>/dev/null || true
+
+# Wipe signatures and zero out headers (Primary and Backup GPT)
 wipefs -af "$DISK"
-sgdisk --zap-all "$DISK"
+dd if=/dev/zero of="$DISK" bs=1M count=1 conv=notrunc
+DISK_SIZE=$(blockdev --getsize64 "$DISK")
+dd if=/dev/zero of="$DISK" bs=1M count=1 seek=$(( (DISK_SIZE / 1048576) - 1 )) conv=notrunc 2>/dev/null
 
 # --- PARTITIONING ---
-# 1: EFI (1G), 2: Swap (User choice), 3: Root (The rest)
+echo "Creating new partition table..."
+# EFI: 1G, Swap: $SWAPSIZE, Root: Remainder
 printf "label: gpt\n,1G,U\n,%s,S\n,,L\n" "$SWAPSIZE" | sfdisk --force "$DISK"
-udevadm settle
 
-# Identify partitions
+udevadm settle
+partprobe "$DISK"
+
+# Identify partition names
 if [[ "$DISK" == *"nvme"* ]]; then
     EFI="${DISK}p1"; SWAP="${DISK}p2"; ROOT="${DISK}p3"
 else
     EFI="${DISK}1"; SWAP="${DISK}2"; ROOT="${DISK}3"
 fi
 
-# --- FORMATTING ---
+# --- FORMATTING & MOUNTING ---
+echo "Formatting and mounting..."
 mkfs.fat -F32 "$EFI"
 mkswap -f "$SWAP"
 swapon "$SWAP"
 mkfs.xfs -f "$ROOT"
 
-# --- MOUNTING ---
 mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
 # --- BASESTRAP ---
-# We do this visibly so you can see if the network or keys fail
-echo "Starting basestrap..."
+echo "Starting basestrap (watch for errors here)..."
+# We add artix-keyring just in case the ISO's keys are old
+pacman -Sy --noconfirm artix-keyring archlinux-keyring || true
+
 basestrap /mnt base base-devel dinit elogind-dinit linux-zen linux-firmware \
 intel-ucode grub efibootmgr networkmanager-dinit dbus-dinit opendoas
 
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # --- CHROOT CONFIG ---
+echo "Entering chroot for final configuration..."
 artix-chroot /mnt /bin/bash <<EOF
 set -e
 # Bootloader
@@ -66,13 +80,13 @@ for svc in dbus elogind NetworkManager; do
 done
 
 # User setup
-echo "root:password" | chpasswd
-useradd -m -G wheel user
-echo "user:password" | chpasswd
+echo "root:$PASSWORD" | chpasswd
+useradd -m -G wheel -s /bin/bash "$USERNAME"
+echo "$USERNAME:$PASSWORD" | chpasswd
 echo 'permit :wheel' > /etc/doas.conf
 EOF
 
 # --- WRAP UP ---
 umount -R /mnt
 sync
-echo "Done! You can now reboot."
+whiptail --title "Complete" --msgbox "Installation finished. You can now reboot." 10 60
