@@ -4,14 +4,14 @@ set -o pipefail
 
 # Check for root
 if [ "$EUID" -ne 0 ]; then
-    echo "Run as root."
+    echo "Please run as root (sudo ./installer.sh)"
     exit 1
 fi
 
 clear
 TITLE="Artix Linux Installer (Dinit)"
 
-# Helper: Password Box
+# --- HELPERS ---
 get_password() {
     local prompt="$1"
     local pw=""
@@ -22,7 +22,6 @@ get_password() {
     echo "$pw"
 }
 
-# Helper: Input Validation
 validate_input() {
     local input="$1"
     if [ -z "$input" ]; then
@@ -32,32 +31,68 @@ validate_input() {
     echo "$input"
 }
 
-# --- DISK SELECTION ---
+# --- STAGE 1: GATHER ALL USER INPUTS (FRONT-LOADING) ---
+
+# 1. Disk Selection
 DISK=$(lsblk -dpnoNAME,SIZE | grep -v loop | whiptail \
 --title "$TITLE" \
---menu "Select installation disk (Use arrows/type first letter)" 20 70 10 \
+--menu "Select installation disk" 20 70 10 \
 $(lsblk -dpnoNAME,SIZE | grep -v loop | awk '{print $1 " " $2}') \
 3>&1 1>&2 2>&3)
-
 [ -z "$DISK" ] && exit 1
 
-whiptail --title "$TITLE" --yesno "ALL DATA ON $DISK WILL BE DESTROYED. Continue?" 10 60 || exit 1
-
-# --- CONFIGURATION ---
+# 2. Filesystem & Swap
 FS_CHOICE=$(whiptail --title "$TITLE" --menu "Select Root File System" 15 60 4 \
 "ext4" "Standard Ext4" \
-"btrfs" "B-Tree Filesystem (Includes NoCOW Swap logic)" \
-"xfs" "XFS Filesystem" \
-"f2fs" "Flash-Friendly Filesystem" 3>&1 1>&2 2>&3)
+"btrfs" "BTRFS (Modern, Snapshots)" \
+"xfs" "XFS (High Performance)" \
+"f2fs" "F2FS (Optimized for SSD/NVMe)" 3>&1 1>&2 2>&3)
 
-SWAPSIZE=$(whiptail --title "$TITLE" --inputbox "Enter swap size (e.g., 8G or 4096M)" 10 60 "8G" 3>&1 1>&2 2>&3)
+SWAPSIZE=$(whiptail --title "$TITLE" --inputbox "Enter swap size (e.g., 8G or 4096M). Enter 0 for none." 10 60 "8G" 3>&1 1>&2 2>&3)
 
-# --- CLEANUP & PARTITIONING ---
+# 3. Locale & Timezone (Reading from LIVE environment to prevent chroot errors)
+LOCALE=$(whiptail --title "$TITLE" --menu "Select your locale" 20 70 10 \
+$(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
+LOCALE=$(validate_input "$LOCALE")
+
+TIMEZONE=$(whiptail --title "$TITLE" --menu "Select your timezone" 20 70 10 \
+$(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
+TIMEZONE=$(validate_input "$TIMEZONE")
+
+# 4. Networking & Users
+HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Enter hostname" 10 60 "artix-pc" 3>&1 1>&2 2>&3)
+HOSTNAME=$(validate_input "$HOSTNAME")
+
+ROOT_PW=$(get_password "Set Root Password")
+
+USERNAME=$(whiptail --title "$TITLE" --inputbox "Enter username" 10 60 "user" 3>&1 1>&2 2>&3)
+USERNAME=$(validate_input "$USERNAME")
+USER_PW=$(get_password "Set password for $USERNAME")
+
+# 5. Desktop Environment / Window Manager
+DESKTOP_TYPE=$(whiptail --title "$TITLE" --menu "Select Desktop or Window Manager" 20 70 6 \
+"DE" "Desktop Environment (Plasma, XFCE, etc)" \
+"WM" "Window Manager Only (i3, XMonad)" 3>&1 1>&2 2>&3)
+
+if [[ "$DESKTOP_TYPE" == "DE" ]]; then
+    DE_CHOICE=$(whiptail --title "$TITLE" --menu "Select Desktop" 20 70 6 \
+    "Plasma" "KDE Plasma" "XFCE" "XFCE4" "MATE" "MATE" "LXQt" "LXQt" "Moksha" "Moksha" 3>&1 1>&2 2>&3)
+else
+    DE_CHOICE=$(whiptail --title "$TITLE" --menu "Select WM" 20 70 6 \
+    "i3" "i3" "XMonad" "XMonad" "WindowMaker" "WindowMaker" 3>&1 1>&2 2>&3)
+fi
+
+# Final Confirmation
+whiptail --title "$TITLE" --yesno "Ready to install. ALL DATA ON $DISK WILL BE WIPED. Proceed?" 10 60 || exit 1
+
+# --- STAGE 2: SYSTEM PREPARATION & PARTITIONING ---
+echo "Starting installation on $DISK..."
+
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 wipefs -af "$DISK"
 
-# Partitioning: 1GB EFI (Type 1), Remainder Root (Type 20)
+# Create 1GB EFI and Remainder Root
 fdisk "$DISK" <<EOF
 g
 n
@@ -77,12 +112,11 @@ EOF
 udevadm settle
 sleep 2
 
-# Handle NVMe naming (p1) vs SATA naming (1)
 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
 EFI="${DISK}${P}1"
 ROOT="${DISK}${P}2"
 
-# --- FORMATTING ---
+# Formatting
 mkfs.fat -F32 "$EFI"
 case $FS_CHOICE in
     ext4) mkfs.ext4 -F "$ROOT" ;;
@@ -95,16 +129,14 @@ mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
-# --- SWAPFILE LOGIC ---
+# --- STAGE 3: SWAPFILE ---
 SWAP_MB=0
-if [[ "$SWAPSIZE" =~ G$ ]]; then
-    SWAP_MB=$(( ${SWAPSIZE%G} * 1024 ))
-elif [[ "$SWAPSIZE" =~ M$ ]]; then
-    SWAP_MB=${SWAPSIZE%M}
+if [[ "$SWAPSIZE" =~ G$ ]]; then SWAP_MB=$(( ${SWAPSIZE%G} * 1024 ))
+elif [[ "$SWAPSIZE" =~ M$ ]]; then SWAP_MB=${SWAPSIZE%M}
 fi
 
 if [[ "$SWAP_MB" -gt 0 ]]; then
-    echo "Creating ${SWAP_MB}MB swapfile..."
+    echo "Configuring Swap..."
     if [[ "$FS_CHOICE" == "btrfs" ]]; then
         truncate -s 0 /mnt/swapfile
         chattr +C /mnt/swapfile
@@ -117,9 +149,9 @@ if [[ "$SWAP_MB" -gt 0 ]]; then
     swapon /mnt/swapfile
 fi
 
-# --- BASESTRAP ---
-# Added mesa and xorg-server for GUI compatibility
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit grub efibootmgr ntfs-3g dosfstools mtools whiptail mesa xorg-server"
+# --- STAGE 4: BASESTRAP ---
+echo "Downloading and installing base system (this may take a while)..."
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit grub efibootmgr ntfs-3g dosfstools mtools mesa xorg-server"
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 FS_PKGS=""
 [[ "$FS_CHOICE" == "btrfs" ]] && FS_PKGS="btrfs-progs"
@@ -131,62 +163,30 @@ basestrap /mnt $BASE_PKGS $AUDIO_PKGS $FS_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 [[ "$SWAP_MB" -gt 0 ]] && echo "/swapfile none swap defaults 0 0" >> /mnt/etc/fstab
 
-# --- DE/WM SELECTION ---
-DESKTOP_TYPE=$(whiptail --title "$TITLE" --menu "Select Desktop or Window Manager" 20 70 6 \
-"DE" "Desktop Environment" \
-"WM" "Window Manager Only" \
-3>&1 1>&2 2>&3)
+# --- STAGE 5: SYSTEM CONFIGURATION ---
+echo "Configuring localization, users, and bootloader..."
 
-if [[ "$DESKTOP_TYPE" == "DE" ]]; then
-    DE_CHOICE=$(whiptail --title "$TITLE" --menu "Select Desktop Environment" 20 70 6 \
-    "Plasma" "KDE Plasma Full Suite" \
-    "XFCE" "XFCE4 + Goodies" \
-    "MATE" "MATE Desktop + Extra" \
-    "LXQt" "LXQt Desktop" \
-    "Moksha" "Moksha Desktop" 3>&1 1>&2 2>&3)
-else
-    DE_CHOICE=$(whiptail --title "$TITLE" --menu "Select Window Manager" 20 70 6 \
-    "i3" "i3 Window Manager" \
-    "XMonad" "XMonad Window Manager" \
-    "WindowMaker" "WindowMaker WM" 3>&1 1>&2 2>&3)
-fi
-
-# --- LOCALIZATION ---
-# Grab locales from the installed system
-LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 \
-$(artix-chroot /mnt grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
-LOCALE=$(validate_input "$LOCALE")
+# Time and Locale
 echo "$LOCALE UTF-8" >> /mnt/etc/locale.gen
 artix-chroot /mnt locale-gen
 echo "LANG=$LOCALE" > /mnt/etc/locale.conf
-
-TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 10 \
-$(artix-chroot /mnt awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
-TIMEZONE=$(validate_input "$TIMEZONE")
 artix-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
 artix-chroot /mnt hwclock --systohc
 
-# --- USERS & SECURITY ---
-HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Enter hostname" 10 60 artix 3>&1 1>&2 2>&3)
-HOSTNAME=$(validate_input "$HOSTNAME")
+# Identity
 echo "$HOSTNAME" > /mnt/etc/hostname
-
-ROOT_PW=$(get_password "Enter Root Password")
 echo "root:$ROOT_PW" | artix-chroot /mnt chpasswd
-
-USERNAME=$(whiptail --title "$TITLE" --inputbox "Enter username" 10 60 user 3>&1 1>&2 2>&3)
-USERNAME=$(validate_input "$USERNAME")
-USER_PW=$(get_password "Enter password for $USERNAME")
 artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
 echo "$USERNAME:$USER_PW" | artix-chroot /mnt chpasswd
 
-# DOAS Config & SUDO Symlink
+# Security (Doas + Sudo Link)
 echo "permit persist :wheel" > /mnt/etc/doas.conf
 artix-chroot /mnt chown root:root /etc/doas.conf
 artix-chroot /mnt chmod 0400 /etc/doas.conf
 artix-chroot /mnt ln -sf /usr/bin/doas /usr/bin/sudo
 
-# --- SOFTWARE INSTALLATION ---
+# Desktop/WM Installation
+echo "Installing Desktop Environment: $DE_CHOICE..."
 case $DE_CHOICE in
     Plasma) artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm-dinit ;;
     XFCE)   artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies lightdm-dinit ;;
@@ -198,29 +198,25 @@ case $DE_CHOICE in
     WindowMaker) artix-chroot /mnt pacman -S --noconfirm windowmaker lightdm-dinit xterm ;;
 esac
 
-# --- SERVICE ENABLING (Dinit way) ---
+# Services (Dinit)
 artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
-# Note: Lowercase 'networkmanager' for the service file name
 for svc in dbus networkmanager elogind; do
     [ -f "/mnt/etc/dinit.d/$svc" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
 done
 
-# Enable Display Manager
+# Display Manager Service
 DM="lightdm"
 [[ "$DE_CHOICE" == "Plasma" || "$DE_CHOICE" == "LXQt" ]] && DM="sddm"
 [ -f "/mnt/etc/dinit.d/$DM" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$DM /etc/dinit.d/boot.d/
 
-# --- BOOTLOADER ---
+# Bootloader
 artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
 artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
-# --- FINISH ---
+# --- STAGE 6: CLEANUP ---
 umount -R /mnt
 sync
 
 if whiptail --title "$TITLE" --yesno "Installation complete! Reboot now?" 10 60; then
     reboot
-else
-    clear
-    echo "Done! You can now type 'reboot' manually."
 fi
