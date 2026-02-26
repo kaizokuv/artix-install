@@ -107,6 +107,7 @@ DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
     "XMonad"      "XMonad"              OFF \
     "WindowMaker" "WindowMaker (built from source)" OFF \
     "Moksha"      "Moksha"              OFF \
+    "Cosmic"      "COSMIC (System76)"    OFF \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 # Strip quotes whiptail adds around each selection
@@ -347,9 +348,11 @@ fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
 # Resolve display manager before installing DEs so we never install both.
-# sddm takes priority — if Plasma is selected alongside anything else,
-# all DEs share sddm to avoid the lightdm/sddm conflict.
-if echo "$DE_CHOICES" | grep -qw "Plasma"; then
+# Priority: COSMIC (greetd) > Plasma (sddm) > everything else (lightdm)
+# COSMIC uses its own greeter stack and conflicts with both sddm and lightdm.
+if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
+    DM="greetd"
+elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
     DM="sddm"
 else
     DM="lightdm"
@@ -398,11 +401,39 @@ for DE in $DE_CHOICES; do
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix
             ;;
+        Cosmic)
+            # Enable galaxy repo — cosmic-* packages live there
+            artix-chroot /mnt bash -c "
+                grep -q '\[galaxy\]' /etc/pacman.conf || printf '
+[galaxy]
+Include = /etc/pacman.d/mirrorlist
+' >> /etc/pacman.conf
+                pacman -Sy --noconfirm
+            "
+            # seatd needed by cosmic-comp Wayland compositor for seat management
+            artix-chroot /mnt pacman -S --noconfirm \
+                cosmic-session cosmic-greeter \
+                greetd greetd-dinit \
+                seatd seatd-dinit \
+                xdg-desktop-portal-cosmic
+            # Write greetd config pointing to cosmic-greeter
+            mkdir -p /mnt/etc/greetd
+            cat > /mnt/etc/greetd/config.toml << 'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "cosmic-comp cosmic-greeter"
+user = "cosmic-greeter"
+EOF
+            ;;
     esac
 done
 
 # Install the resolved display manager once, after all DEs are done
-if [[ "$DM" == "sddm" ]]; then
+if [[ "$DM" == "greetd" ]]; then
+    : # greetd already installed in the Cosmic case above
+elif [[ "$DM" == "sddm" ]]; then
     artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
 else
     artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
@@ -411,8 +442,15 @@ fi
 # --- STAGE 10: DINIT SERVICES ---
 mkdir -p /mnt/etc/dinit.d/boot.d
 
-# Service file names — not package names
-for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
+# Service file names — greetd for COSMIC, sddm for Plasma, lightdm for others
+# Enable seatd when COSMIC is selected (needed by cosmic-comp Wayland compositor)
+if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
+    EXTRA_SVCS="seatd"
+else
+    EXTRA_SVCS=""
+fi
+
+for svc in dbus NetworkManager elogind haveged rtkit-daemon $EXTRA_SVCS "$DM"; do
     if [ -f "/mnt/etc/dinit.d/$svc" ]; then
         artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
     else
