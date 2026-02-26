@@ -2,11 +2,6 @@
 set -e
 set -o pipefail
 
-# ---------------------------------------------
-# Artix Linux Master Installer (Dinit, Fixed)
-# ---------------------------------------------
-
-# --- ROOT CHECK & CLEANUP ---
 [ "$EUID" -ne 0 ] && echo "Please run as root." && exit 1
 
 umount -R /mnt 2>/dev/null || true
@@ -16,14 +11,15 @@ rm -f /mnt/var/lib/pacman/db.lck 2>/dev/null
 clear
 TITLE="Artix Master Installer (Dinit Fixed)"
 
-# --- UPDATE LIVE KEYRING (prevents pacman signature issues) ---
+# --- UPDATE LIVE KEYRING ---
 pacman -Sy artix-keyring --noconfirm
 pacman-key --init
 pacman-key --populate artix
 
 # --- HELPERS ---
 get_password() {
-    local prompt="$1"; local pw=""
+    local prompt="$1"
+    local pw=""
     while [ -z "$pw" ]; do
         pw=$(whiptail --title "$TITLE" --passwordbox "$prompt" 10 60 3>&1 1>&2 2>&3)
         [ $? -ne 0 ] && exit 1
@@ -31,12 +27,14 @@ get_password() {
     echo "$pw"
 }
 
-validate_input() { local input="$1"; [ -z "$input" ] && exit 1; echo "$input"; }
+validate_input() {
+    local input="$1"; [ -z "$input" ] && exit 1; echo "$input"
+}
 
 # --- STAGE 1: USER INPUTS ---
 DISK=$(lsblk -dpnoNAME,SIZE | grep -v loop | \
-        whiptail --title "$TITLE" --menu "Select installation disk" 20 70 10 \
-        $(lsblk -dpnoNAME,SIZE | grep -v loop | awk '{print $1 " " $2}') 3>&1 1>&2 2>&3)
+    whiptail --title "$TITLE" --menu "Select installation disk" 20 70 10 \
+    $(lsblk -dpnoNAME,SIZE | grep -v loop | awk '{print $1 " " $2}') 3>&1 1>&2 2>&3)
 [ -z "$DISK" ] && exit 1
 
 FS_CHOICE=$(whiptail --title "$TITLE" --menu "Root filesystem" 15 60 4 \
@@ -60,11 +58,11 @@ LOCALE=$(whiptail --title "$TITLE" --menu "Locale" 20 70 10 \
 $(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
 
 TIMEZONE=$(whiptail --title "$TITLE" --menu "Timezone" 20 70 10 \
-$(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2;&3)
+$(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
 
-HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Hostname" 10 60 "artix" 3>&1 1>&2 2;&3)
+HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Hostname" 10 60 "artix" 3>&1 1>&2 2>&3)
 ROOT_PW=$(get_password "Root password")
-USERNAME=$(whiptail --title "$TITLE" --inputbox "Username" 10 60 "user" 3>&1 1>&2 2;&3)
+USERNAME=$(whiptail --title "$TITLE" --inputbox "Username" 10 60 "user" 3>&1 1>&2 2>&3)
 USER_PW=$(get_password "User password")
 
 DE_CHOICE=$(whiptail --title "$TITLE" --menu "Environment" 20 70 10 \
@@ -74,7 +72,7 @@ DE_CHOICE=$(whiptail --title "$TITLE" --menu "Environment" 20 70 10 \
 "i3" "i3wm" \
 "XMonad" "XMonad" \
 "WindowMaker" "WindowMaker" \
-"Moksha" "Moksha desktop" 3;&1 1;&2 2;&3)
+"Moksha" "Moksha desktop" 3>&1 1>&2 2>&3)
 
 # --- STAGE 2: DISK PARTITION + FORMAT ---
 wipefs -af "$DISK"
@@ -125,7 +123,7 @@ fi
 
 [[ "$SWAP_CHOICE" =~ Zram|Both ]] && ZRAM_PKGS="zramen zramen-dinit" || ZRAM_PKGS=""
 
-# --- STAGE 4: BASESTRAP + PACKAGES ---
+# --- STAGE 4: BASESTRAP ---
 GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 lspci | grep -qi nvidia && GPU_PKGS="nvidia nvidia-utils nvidia-settings"
 lspci | grep -qi amd && GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
@@ -136,63 +134,3 @@ AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucon
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS $ZRAM_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]] && echo "/swapfile none swap defaults 0 0" >> /mnt/etc/fstab
-
-# --- STAGE 5: CONFIG & OPTIMIZATIONS ---
-sed -i 's/#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
-sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 10/' /mnt/etc/pacman.conf
-
-echo "$LOCALE UTF-8" >> /mnt/etc/locale.gen
-artix-chroot /mnt locale-gen
-echo "LANG=$LOCALE" > /mnt/etc/locale.conf
-artix-chroot /mnt ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
-artix-chroot /mnt hwclock --systohc
-echo "$HOSTNAME" > /mnt/etc/hostname
-
-echo "root:$ROOT_PW" | artix-chroot /mnt chpasswd
-artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
-echo "$USERNAME:$USER_PW" | artix-chroot /mnt chpasswd
-echo "permit persist :wheel" > /mnt/etc/doas.conf
-artix-chroot /mnt ln -sf /usr/bin/doas /usr/bin/sudo
-artix-chroot /mnt xdg-user-dirs-update
-
-echo "export HISTCONTROL=ignoreboth" >> /mnt/home/$USERNAME/.bashrc
-echo "export HISTSIZE=10000" >> /mnt/home/$USERNAME/.bashrc
-echo "alias sudo='doas'" >> /mnt/home/$USERNAME/.bashrc
-artix-chroot /mnt chown $USERNAME:$USERNAME /home/$USERNAME/.bashrc
-
-# Pipewire autostart
-artix-chroot /mnt bash -c "cat > /etc/profile.d/pipewire-start.sh << 'EOF'
-[ \"\$UID\" -lt 1000 ] && return
-if [ -z \"\$XDG_RUNTIME_DIR\" ]; then export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"; fi
-if [ -z \"\$DBUS_SESSION_BUS_ADDRESS\" ]; then eval \$(dbus-launch --sh-syntax --exit-with-session); fi
-pgrep -x pipewire >/dev/null || pipewire &
-pgrep -x pipewire-pulse >/dev/null || pipewire-pulse &
-pgrep -x wireplumber >/dev/null || wireplumber &
-EOF"
-chmod +x /mnt/etc/profile.d/pipewire-start.sh
-
-# --- STAGE 6: ENVIRONMENT INSTALL ---
-case $DE_CHOICE in
-    Plasma) artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm-dinit xdg-desktop-portal-kde plasma-pa ;;
-    XFCE)   artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies lightdm-dinit lightdm-gtk-greeter xdg-desktop-portal-gtk ;;
-    LXQt)   artix-chroot /mnt pacman -S --noconfirm lxqt sddm-dinit ;;
-    i3)     artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu lightdm-dinit lightdm-gtk-greeter xterm ;;
-    XMonad) artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xmobar dmenu lightdm-dinit lightdm-gtk-greeter xterm ;;
-    WindowMaker) artix-chroot /mnt pacman -S --noconfirm windowmaker lightdm-dinit lightdm-gtk-greeter xterm ;;
-    Moksha) artix-chroot /mnt pacman -S --noconfirm moksha-artix lightdm-dinit lightdm-gtk-greeter ;;
-esac
-
-# --- STAGE 7: DINIT SERVICES & BOOTLOADER ---
-artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
-DM="lightdm"; [[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
-for svc in dbus NetworkManager elogind haveged rtkit $DM; do
-    [ -f "/mnt/etc/dinit.d/$svc" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
-done
-[[ "$SWAP_CHOICE" =~ Zram|Both ]] && artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
-
-artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
-artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
-
-umount -R /mnt
-whiptail --title "$TITLE" --msgbox "System installed successfully! Rebooting…" 10 60
-reboot
