@@ -439,7 +439,7 @@ Include = /etc/pacman.d/mirrorlist
                 cosmic-session cosmic-greeter \
                 greetd greetd-dinit \
                 xdg-desktop-portal-cosmic \
-                cosmic-term cosmic-files cosmic-edit \
+                cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
                 cosmic-settings pavucontrol
             # Write greetd config pointing to cosmic-greeter
