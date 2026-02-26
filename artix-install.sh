@@ -101,7 +101,7 @@ GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 lspci | grep -iI "nvidia" >/dev/null && GPU_PKGS="nvidia nvidia-utils nvidia-settings"
 lspci | grep -iI "amd" >/dev/null && GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit haveged haveged-dinit xdg-user-dirs dbus-x11 rtkit"
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit haveged haveged-dinit xdg-user-dirs dbus rtkit"
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
