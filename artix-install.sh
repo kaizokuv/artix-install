@@ -2,6 +2,7 @@
 set -e
 set -o pipefail
 
+# --- ROOT CHECK ---
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root."
     exit 1
@@ -21,46 +22,86 @@ get_password() {
     echo "$pw"
 }
 
+get_confirmed_password() {
+    local prompt="$1"
+    local pw1 pw2
+    while true; do
+        pw1=$(whiptail --title "$TITLE" --passwordbox "$prompt" 10 60 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && exit 1
+        pw2=$(whiptail --title "$TITLE" --passwordbox "Confirm $prompt" 10 60 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && exit 1
+        if [ "$pw1" = "$pw2" ]; then
+            echo "$pw1"
+            return
+        fi
+        whiptail --title "$TITLE" --msgbox "Passwords do not match. Try again." 8 50
+    done
+}
+
 # --- STAGE 1: INPUTS ---
-DISK=$(lsblk -dpnoNAME,SIZE | grep -v loop | whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
-$(lsblk -dpnoNAME,SIZE | grep -v loop | awk '{print $1 " " $2}') 3>&1 1>&2 2>&3)
+
+# Capture disk list once to avoid double lsblk calls
+DISKLIST=$(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1 " " $2}')
+DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
+    $DISKLIST 3>&1 1>&2 2>&3)
 [ -z "$DISK" ] && exit 1
 
 FS_CHOICE=$(whiptail --title "$TITLE" --menu "Root Filesystem" 15 60 4 \
-"ext4" "Standard Ext4" \
-"btrfs" "B-Tree Filesystem" \
-"xfs" "XFS" \
-"f2fs" "Flash-Friendly" 3>&1 1>&2 2>&3)
+    "ext4"  "Standard Ext4" \
+    "btrfs" "B-Tree Filesystem" \
+    "xfs"   "XFS" \
+    "f2fs"  "Flash-Friendly" 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
 
 SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
-"Zram" "Use zramen" \
-"Swapfile" "Disk Swapfile" \
-"Both" "Zram + Swapfile" \
-"None" "No Swap" 3>&1 1>&2 2>&3)
+    "Zram"     "Use zramen" \
+    "Swapfile" "Disk Swapfile" \
+    "Both"     "Zram + Swapfile" \
+    "None"     "No Swap" 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
 
 LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 \
-$(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
+    $(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
 
 TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 10 \
-$(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
+    $(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
 
-HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Hostname" 10 60 "artix" 3>&1 1>&2 2>&3)
-ROOT_PW=$(get_password "Root Password")
-USERNAME=$(whiptail --title "$TITLE" --inputbox "Username" 10 60 "user" 3>&1 1>&2 2>&3)
-USER_PW=$(get_password "User Password")
+# Validated hostname input
+HOSTNAME=""
+while [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9\-]+$ ]]; do
+    HOSTNAME=$(whiptail --title "$TITLE" --inputbox \
+        "Hostname (letters, numbers, hyphens only)" 10 60 "artix" 3>&1 1>&2 2>&3)
+    [ $? -ne 0 ] && exit 1
+done
 
-DE_CHOICE=$(whiptail --title "$TITLE" --menu "Environment" 20 70 10 \
-"Plasma" "KDE Plasma" \
-"XFCE" "XFCE4" \
-"LXQt" "LXQt" \
-"i3" "i3wm" \
-"XMonad" "XMonad" \
-"WindowMaker" "WindowMaker" \
-"Moksha" "Moksha" 3>&1 1>&2 2>&3)
+ROOT_PW=$(get_confirmed_password "Root Password")
 
-# --- STAGE 2: DISK OPS (Working Partition Scheme) ---
+# Validated username input
+USERNAME=""
+while [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_\-]*$ ]]; do
+    USERNAME=$(whiptail --title "$TITLE" --inputbox \
+        "Username (lowercase letters, numbers, _ or - only)" 10 60 "user" 3>&1 1>&2 2>&3)
+    [ $? -ne 0 ] && exit 1
+done
+
+USER_PW=$(get_confirmed_password "User Password")
+
+DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop Environment" 20 70 10 \
+    "Plasma"      "KDE Plasma" \
+    "XFCE"        "XFCE4" \
+    "LXQt"        "LXQt" \
+    "i3"          "i3wm" \
+    "XMonad"      "XMonad" \
+    "WindowMaker" "WindowMaker" \
+    "Moksha"      "Moksha" 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
+
+# --- STAGE 2: DISK OPERATIONS ---
+
 wipefs -af "$DISK"
-fdisk "$DISK" <<EOF
+fdisk "$DISK" << EOF
 g
 n
 1
@@ -75,96 +116,230 @@ n
 
 w
 EOF
+
 udevadm settle
+
+# Determine partition suffix (nvme needs "p", sda does not)
 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
-EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+EFI="${DISK}${P}1"
+ROOT="${DISK}${P}2"
 
 mkfs.fat -F32 "$EFI"
-case $FS_CHOICE in
-    ext4) mkfs.ext4 -F "$ROOT" ;;
-    btrfs) mkfs.btrfs -f "$ROOT" ;;
-    xfs) mkfs.xfs -f "$ROOT" ;;
-    f2fs) mkfs.f2fs -f "$ROOT" ;;
-esac
-mount "$ROOT" /mnt; mkdir -p /mnt/boot; mount "$EFI" /mnt/boot
 
-# --- STAGE 3: SWAP & BASESTRAP ---
+case "$FS_CHOICE" in
+    ext4)  mkfs.ext4  -F  "$ROOT" ;;
+    btrfs) mkfs.btrfs -f  "$ROOT" ;;
+    xfs)   mkfs.xfs   -f  "$ROOT" ;;
+    f2fs)  mkfs.f2fs  -f  "$ROOT" ;;
+esac
+
+mount "$ROOT" /mnt
+mkdir -p /mnt/boot
+mount "$EFI" /mnt/boot
+
+# --- STAGE 3: SWAP SETUP ---
+
 if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
-    [[ "$FS_CHOICE" == "btrfs" ]] && (truncate -s 0 /mnt/swapfile && chattr +C /mnt/swapfile && fallocate -l 4G /mnt/swapfile) || dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096 status=progress
-    chmod 600 /mnt/swapfile; mkswap /mnt/swapfile
+    if [[ "$FS_CHOICE" == "btrfs" ]]; then
+        # btrfs requires CoW disabled before allocating swapfile
+        truncate -s 0 /mnt/swapfile
+        chattr +C /mnt/swapfile
+        fallocate -l 4G /mnt/swapfile
+    else
+        dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096 status=progress
+    fi
+    chmod 600 /mnt/swapfile
+    mkswap /mnt/swapfile
 fi
 
-GPU_PKGS="mesa vulkan-intel xf86-video-intel"
-lspci | grep -iI "nvidia" > /dev/null && GPU_PKGS="nvidia nvidia-utils nvidia-settings"
-lspci | grep -iI "amd" > /dev/null && GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
+# --- STAGE 4: PACKAGE SELECTION ---
 
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit haveged haveged-dinit xdg-user-dirs dbus rtkit"
+# GPU detection — use elif so NVIDIA isn't overwritten by AMD on hybrid systems
+if lspci | grep -qi "nvidia"; then
+    GPU_PKGS="nvidia nvidia-utils nvidia-settings"
+elif lspci | grep -qi "amd"; then
+    GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
+else
+    GPU_PKGS="mesa vulkan-intel xf86-video-intel"
+fi
+
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
+    dinit elogind-dinit dbus-dinit doas vi \
+    networkmanager networkmanager-dinit wpa_supplicant \
+    grub efibootmgr ntfs-3g dosfstools mtools \
+    libnewt xorg-server xorg-xinit \
+    haveged haveged-dinit xdg-user-dirs \
+    dbus rtkit rtkit-dinit"
+
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
+
+# --- STAGE 5: BASESTRAP ---
 
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-# --- STAGE 4: CONFIG ---
-echo "$LOCALE UTF-8" >> /mnt/etc/locale.gen
-artix-chroot /mnt locale-gen
-echo "LANG=$LOCALE" > /mnt/etc/locale.conf
-artix-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
-artix-chroot /mnt hwclock --systohc
-echo "$HOSTNAME" > /mnt/etc/hostname
-echo "root:$ROOT_PW" | artix-chroot /mnt chpasswd
-artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
-echo "$USERNAME:$USER_PW" | artix-chroot /mnt chpasswd
-echo "permit persist :wheel" > /mnt/etc/doas.conf
-artix-chroot /mnt ln -sf /usr/bin/doas /usr/bin/sudo
-artix-chroot /mnt xdg-user-dirs-update
+# --- STAGE 6: CHROOT CONFIGURATION ---
+# All configuration batched into a single chroot call for reliability and speed
 
-# --- USER PIPEWIRE DINIT SERVICE ---
-artix-chroot /mnt bash -c "cat > /etc/dinit.d/user-pipewire << 'EOF'
-[ \"\$UID\" -lt 1000 ] && exit 0
-export XDG_RUNTIME_DIR=\"/run/user/\$UID\"
-pgrep -x pipewire >/dev/null || pipewire &
+artix-chroot /mnt bash -s -- \
+    "$USERNAME" "$ROOT_PW" "$USER_PW" \
+    "$LOCALE" "$TIMEZONE" "$HOSTNAME" << 'CHROOT'
+
+USERNAME="$1"
+ROOT_PW="$2"
+USER_PW="$3"
+LOCALE="$4"
+TIMEZONE="$5"
+HOSTNAME="$6"
+
+# Locale & time
+echo "$LOCALE UTF-8" >> /etc/locale.gen
+locale-gen
+echo "LANG=$LOCALE" > /etc/locale.conf
+ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
+hwclock --systohc
+
+# Hostname
+echo "$HOSTNAME" > /etc/hostname
+
+# Users & passwords (printf avoids issues with special chars in passwords)
+printf '%s:%s\n' "root" "$ROOT_PW" | chpasswd
+useradd -m -G wheel,audio,video,storage "$USERNAME"
+printf '%s:%s\n' "$USERNAME" "$USER_PW" | chpasswd
+
+# doas config (wheel group gets sudo-like access)
+echo "permit persist :wheel" > /etc/doas.conf
+ln -sf /usr/bin/doas /usr/bin/sudo
+
+# XDG dirs
+xdg-user-dirs-update
+
+CHROOT
+
+# --- STAGE 7: AUDIO SETUP (Plasma Fix) ---
+# Drop a proper .xprofile for the user so pipewire starts with the X session.
+# This is more reliable than a system dinit service for per-user audio.
+
+cat > /mnt/home/"$USERNAME"/.xprofile << EOF
+export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+
+# Start pipewire stack if not already running
+pgrep -x pipewire    >/dev/null || pipewire &
 pgrep -x pipewire-pulse >/dev/null || pipewire-pulse &
 pgrep -x wireplumber >/dev/null || wireplumber &
-EOF"
-chmod +x /mnt/etc/dinit.d/user-pipewire
-artix-chroot /mnt ln -sf /etc/dinit.d/user-pipewire /etc/dinit.d/boot.d/
+EOF
+chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/.xprofile
 
-# --- ZRAM ---
+# Also create a user-level dinit service dir and proper service files
+# so pipewire works whether starting from a display manager or TTY
+mkdir -p /mnt/home/"$USERNAME"/.config/dinit.d
+
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << 'EOF'
+type = process
+command = /usr/bin/pipewire
+restart = true
+EOF
+
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire-pulse << 'EOF'
+type = process
+command = /usr/bin/pipewire-pulse
+depends-on = pipewire
+restart = true
+EOF
+
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/wireplumber << 'EOF'
+type = process
+command = /usr/bin/wireplumber
+depends-on = pipewire
+restart = true
+EOF
+
+chown -R "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/.config
+
+# --- STAGE 8: ZRAM ---
+
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
     artix-chroot /mnt pacman -S --noconfirm zramen zramen-dinit
-    artix-chroot /mnt bash -c "echo 'MAX_SIZE=2048' > /etc/default/zramen"
+    echo 'MAX_SIZE=2048' > /mnt/etc/default/zramen
 fi
 
-# --- ENVIRONMENT INSTALL ---
-case $DE_CHOICE in
-    Plasma) artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm-dinit xdg-desktop-portal-kde plasma-pa ;;
-    XFCE)   artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies lightdm-dinit lightdm-gtk-greeter xdg-desktop-portal-gtk ;;
-    LXQt)   artix-chroot /mnt pacman -S --noconfirm lxqt sddm-dinit ;;
-    i3)     artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu lightdm-dinit lightdm-gtk-greeter xterm ;;
-    XMonad) artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xmobar dmenu lightdm-dinit lightdm-gtk-greeter xterm ;;
-    WindowMaker) artix-chroot /mnt pacman -S --noconfirm windowmaker lightdm-dinit lightdm-gtk-greeter xterm ;;
-    Moksha) artix-chroot /mnt pacman -S --noconfirm moksha-artix lightdm-dinit lightdm-gtk-greeter ;;
+# --- STAGE 9: DESKTOP ENVIRONMENT ---
+
+case "$DE_CHOICE" in
+    Plasma)
+        artix-chroot /mnt pacman -S --noconfirm \
+            plasma kde-applications sddm sddm-dinit \
+            xdg-desktop-portal-kde plasma-pa
+        ;;
+    XFCE)
+        artix-chroot /mnt pacman -S --noconfirm \
+            xfce4 xfce4-goodies \
+            lightdm lightdm-dinit lightdm-gtk-greeter \
+            xdg-desktop-portal-gtk
+        ;;
+    LXQt)
+        artix-chroot /mnt pacman -S --noconfirm \
+            lxqt sddm sddm-dinit
+        ;;
+    i3)
+        artix-chroot /mnt pacman -S --noconfirm \
+            i3-wm dmenu \
+            lightdm lightdm-dinit lightdm-gtk-greeter xterm
+        ;;
+    XMonad)
+        artix-chroot /mnt pacman -S --noconfirm \
+            xmonad xmonad-contrib xmobar dmenu \
+            lightdm lightdm-dinit lightdm-gtk-greeter xterm
+        ;;
+    WindowMaker)
+        artix-chroot /mnt pacman -S --noconfirm \
+            windowmaker \
+            lightdm lightdm-dinit lightdm-gtk-greeter xterm
+        ;;
+    Moksha)
+        artix-chroot /mnt pacman -S --noconfirm \
+            moksha-artix \
+            lightdm lightdm-dinit lightdm-gtk-greeter
+        ;;
 esac
 
-# --- DINIT SERVICES ---
-artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
+# --- STAGE 10: DINIT SERVICES ---
+
+mkdir -p /mnt/etc/dinit.d/boot.d
+
+# Determine display manager
 DM="lightdm"
 [[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
 
-for svc in dbus NetworkManager elogind haveged rtkit $DM; do
-    [ -f "/mnt/etc/dinit.d/$svc" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
+# Enable system services
+for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
+    if [ -f "/mnt/etc/dinit.d/$svc" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/"$svc" /etc/dinit.d/boot.d/
+    else
+        echo "Warning: dinit service '$svc' not found, skipping."
+    fi
 done
 
-[[ "$SWAP_CHOICE" =~ Zram|Both ]] && artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
+# Enable zramen if selected
+if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
+    artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
+fi
 
-# --- BOOTLOADER ---
-artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
+# --- STAGE 11: BOOTLOADER ---
+
+artix-chroot /mnt grub-install \
+    --target=x86_64-efi \
+    --efi-directory=/boot \
+    --bootloader-id=Artix
+
 artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
-# --- UNMOUNT ---
+# --- STAGE 12: UNMOUNT ---
+
 umount -R /mnt
 
-# --- REBOOT PROMPT ---
+# --- DONE ---
+
 if whiptail --title "$TITLE" --yesno "Installation complete! Reboot now?" 10 60; then
     reboot
 else
