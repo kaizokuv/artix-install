@@ -80,4 +80,8 @@ EOF
 # --- WRAP UP ---
 umount -R /mnt
 sync
-whiptail --title "Complete" --msgbox "Artix installed successfully without sudo!" 10 60
+if whiptail --yesno "Installation complete. Reboot now?" 10 60; then
+    reboot
+else
+    echo "You chose not to reboot. You may reboot manually."
+fi
