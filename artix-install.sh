@@ -86,6 +86,13 @@ DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop Environment" 20 70 10 \
     "Moksha"      "Moksha" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
+BL_CHOICE=$(whiptail --title "$TITLE" --menu "Bootloader" 15 70 3 \
+    "grub"   "GRUB2 (most compatible)" \
+    "limine" "Limine (fast, minimal)" \
+    "refind" "rEFInd (graphical picker)" 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
+
+
 # --- STAGE 2: DISK OPERATIONS ---
 umount -R /mnt 2>/dev/null || true
 mkdir -p /mnt
@@ -154,7 +161,7 @@ fi
 BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
     dinit elogind-dinit dbus-dinit doas vi \
     networkmanager networkmanager-dinit wpa_supplicant \
-    grub efibootmgr ntfs-3g dosfstools mtools \
+    efibootmgr ntfs-3g dosfstools mtools \
     libnewt xorg-server xorg-xinit \
     haveged haveged-dinit xdg-user-dirs \
     dbus rtkit"
@@ -327,8 +334,56 @@ done
 [[ "$SWAP_CHOICE" =~ Zram|Both ]] && artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
 
 # --- STAGE 11: BOOTLOADER ---
-artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
-artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+case "$BL_CHOICE" in
+    grub)
+        artix-chroot /mnt pacman -S --noconfirm grub efibootmgr
+        artix-chroot /mnt grub-install \
+            --target=x86_64-efi \
+            --efi-directory=/boot \
+            --bootloader-id=Artix
+        artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+        ;;
+
+    limine)
+        artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
+        # Install limine EFI binary to /boot/EFI/limine
+        artix-chroot /mnt bash -c "
+            mkdir -p /boot/EFI/limine
+            cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/
+            efibootmgr --create \
+                --disk ${DISK} \
+                --part 1 \
+                --label 'Limine' \
+                --loader '\\EFI\\limine\\BOOTX64.EFI'
+        "
+        # Write limine.conf — gets the running kernel from /boot
+        KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt||')
+        INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt||')
+        ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+        cat > /mnt/boot/limine.conf << EOF
+timeout: 5
+
+/Artix Linux
+    protocol: linux
+    kernel_path: boot():\$KERNEL_IMG
+    cmdline: root=UUID=\$ROOT_UUID rw quiet
+    module_path: boot():\$INITRD_IMG
+EOF
+        ;;
+
+    refind)
+        artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
+        artix-chroot /mnt refind-install
+        # refind-install auto-detects kernels — write a minimal refind_linux.conf
+        # so it passes the correct root UUID
+        ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+        cat > /mnt/boot/refind_linux.conf << EOF
+"Boot with standard options"  "root=UUID=\$ROOT_UUID rw quiet"
+"Boot to terminal"            "root=UUID=\$ROOT_UUID rw init=/sbin/dinit"
+"Boot with minimal options"   "root=UUID=\$ROOT_UUID rw"
+EOF
+        ;;
+esac
 
 # --- STAGE 12: UNMOUNT ---
 umount -R /mnt
