@@ -169,7 +169,7 @@ BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
     grub efibootmgr ntfs-3g dosfstools mtools \
     libnewt xorg-server xorg-xinit \
     haveged haveged-dinit xdg-user-dirs \
-    dbus rtkit"
+    dbus rtkit rtkit-dinit"
 
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 
@@ -179,33 +179,29 @@ basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # --- STAGE 6: CHROOT CONFIGURATION ---
-# All configuration batched into a single chroot call for reliability and speed
+# Variables are written directly into a temp script so there are no
+# heredoc quoting issues — single-quoted heredocs don't expand variables,
+# which caused useradd to receive an empty username.
 
-artix-chroot /mnt bash -s -- \
-    "$USERNAME" "$ROOT_PW" "$USER_PW" \
-    "$LOCALE" "$TIMEZONE" "$HOSTNAME" << 'CHROOT'
-
-USERNAME="$1"
-ROOT_PW="$2"
-USER_PW="$3"
-LOCALE="$4"
-TIMEZONE="$5"
-HOSTNAME="$6"
+cat > /mnt/root/configure.sh << CHROOT
+#!/bin/bash
+set -e
 
 # Locale & time
-echo "$LOCALE UTF-8" >> /etc/locale.gen
+echo "${LOCALE} UTF-8" >> /etc/locale.gen
 locale-gen
-echo "LANG=$LOCALE" > /etc/locale.conf
-ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
+echo "LANG=${LOCALE}" > /etc/locale.conf
+ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
 hwclock --systohc
 
 # Hostname
-echo "$HOSTNAME" > /etc/hostname
+echo "${HOSTNAME}" > /etc/hostname
 
-# Users & passwords (printf avoids issues with special chars in passwords)
-printf '%s:%s\n' "root" "$ROOT_PW" | chpasswd
-useradd -m -G wheel,audio,video,storage "$USERNAME"
-printf '%s:%s\n' "$USERNAME" "$USER_PW" | chpasswd
+# Users & passwords
+# printf is used instead of echo to handle special characters safely
+printf '%s:%s\n' "root" "${ROOT_PW}" | chpasswd
+useradd -m -G wheel,audio,video,storage "${USERNAME}"
+printf '%s:%s\n' "${USERNAME}" "${USER_PW}" | chpasswd
 
 # doas config (wheel group gets sudo-like access)
 echo "permit persist :wheel" > /etc/doas.conf
@@ -213,8 +209,11 @@ ln -sf /usr/bin/doas /usr/bin/sudo
 
 # XDG dirs
 xdg-user-dirs-update
-
 CHROOT
+
+chmod +x /mnt/root/configure.sh
+artix-chroot /mnt /root/configure.sh
+rm /mnt/root/configure.sh
 
 # --- STAGE 7: AUDIO SETUP (Plasma Fix) ---
 # Drop a proper .xprofile for the user so pipewire starts with the X session.
