@@ -8,7 +8,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 clear
-TITLE="Artix Linux Master Installer"
+TITLE="Artix Linux Master Installer (V3 - Fast Boot Edition)"
 
 # --- HELPERS ---
 get_password() {
@@ -43,13 +43,20 @@ ROOT_PW=$(get_password "Root Password")
 USERNAME=$(whiptail --title "$TITLE" --inputbox "Username" 10 60 "user" 3>&1 1>&2 2>&3)
 USER_PW=$(get_password "User Password")
 
-DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop Environment" 20 70 6 "Plasma" "KDE Plasma" "XFCE" "XFCE4" "MATE" "MATE" "LXQt" "LXQt" "Moksha" "Moksha" "None" "CLI Only" 3>&1 1>&2 2>&3)
+# RESTORED WM SELECTION
+DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop/Window Manager" 20 70 10 \
+"Plasma" "KDE Plasma" \
+"XFCE" "XFCE4" \
+"i3" "i3 Window Manager" \
+"XMonad" "XMonad" \
+"WindowMaker" "WindowMaker" \
+"Moksha" "Moksha Desktop" \
+"None" "CLI Only" 3>&1 1>&2 2>&3)
 
-# --- STAGE 2: DISK & PARTITIONING ---
+# --- STAGE 2: DISK OPS ---
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 wipefs -af "$DISK"
-
 fdisk "$DISK" <<EOF
 g
 n
@@ -65,14 +72,10 @@ n
 
 w
 EOF
-
 udevadm settle
-sleep 2
-
 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
 EFI="${DISK}${P}1"
 ROOT="${DISK}${P}2"
-
 mkfs.fat -F32 "$EFI"
 case $FS_CHOICE in
     ext4) mkfs.ext4 -F "$ROOT" ;;
@@ -80,7 +83,6 @@ case $FS_CHOICE in
     xfs) mkfs.xfs -f "$ROOT" ;;
     f2fs) mkfs.f2fs -f "$ROOT" ;;
 esac
-
 mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
@@ -98,7 +100,6 @@ if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
     mkswap /mnt/swapfile
 fi
 
-# Detect GPU for Drivers (Simplified for Base Repos)
 GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 if lspci | grep -iI "nvidia" > /dev/null; then
     GPU_PKGS="nvidia nvidia-utils nvidia-settings"
@@ -106,7 +107,8 @@ elif lspci | grep -iI "amd" > /dev/null; then
     GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 fi
 
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit"
+# Added 'haveged' for faster boot (entropy)
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit haveged haveged-dinit"
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 FS_PKGS=""
 [[ "$FS_CHOICE" == "btrfs" ]] && FS_PKGS="btrfs-progs"
@@ -117,25 +119,21 @@ SWAP_PKGS=""
 
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $FS_PKGS $SWAP_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
-[[ -f /mnt/swapfile ]] && echo "/swapfile none swap defaults 0 0" >> /mnt/etc/fstab
 
-# --- STAGE 4: CONFIGURATION ---
+# --- STAGE 4: CONFIG ---
 echo "$LOCALE UTF-8" >> /mnt/etc/locale.gen
 artix-chroot /mnt locale-gen
 echo "LANG=$LOCALE" > /mnt/etc/locale.conf
 artix-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
 artix-chroot /mnt hwclock --systohc
-
 echo "$HOSTNAME" > /mnt/etc/hostname
 echo "root:$ROOT_PW" | artix-chroot /mnt chpasswd
 artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
 echo "$USERNAME:$USER_PW" | artix-chroot /mnt chpasswd
-
-# Security & Sudo Link
 echo "permit persist :wheel" > /mnt/etc/doas.conf
 artix-chroot /mnt ln -sf /usr/bin/doas /usr/bin/sudo
 
-# Audio Fix (Pipewire Autostart)
+# Audio Fix
 artix-chroot /mnt bash -c "cat > /etc/profile.d/pipewire-start.sh <<EOF
 if [ -n \"\\\$DISPLAY\" ] || [ -n \"\\\$WAYLAND_DISPLAY\" ]; then
     pgrep -x pipewire > /dev/null || pipewire &
@@ -144,23 +142,29 @@ if [ -n \"\\\$DISPLAY\" ] || [ -n \"\\\$WAYLAND_DISPLAY\" ]; then
 fi
 EOF"
 
-# Install DE
+# Zram Fix: Create a default config so the service doesn't fail
+if [[ "$SWAP_CHOICE" == "Zram" || "$SWAP_CHOICE" == "Both" ]]; then
+    artix-chroot /mnt bash -c "echo 'MAX_SIZE=2048' > /etc/default/zramen"
+fi
+
+# Install DE/WM
 case $DE_CHOICE in
     Plasma) artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm-dinit ;;
     XFCE)   artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies lightdm-dinit ;;
-    MATE)   artix-chroot /mnt pacman -S --noconfirm mate mate-extra lightdm-dinit ;;
-    LXQt)   artix-chroot /mnt pacman -S --noconfirm lxqt sddm-dinit ;;
+    i3)     artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu lightdm-dinit xterm ;;
+    XMonad) artix-chroot /mnt pacman -S --noconfirm xmonad xmobar lightdm-dinit xterm dmenu ;;
+    WindowMaker) artix-chroot /mnt pacman -S --noconfirm windowmaker lightdm-dinit xterm ;;
     Moksha) artix-chroot /mnt pacman -S --noconfirm moksha-artix lightdm-dinit ;;
 esac
 
-# Services (Dinit)
+# Services
 artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
 DM=""
-[[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
-[[ "$DE_CHOICE" =~ XFCE|MATE|Moksha ]] && DM="lightdm"
+[[ "$DE_CHOICE" =~ Plasma ]] && DM="sddm"
+[[ "$DE_CHOICE" =~ XFCE|i3|XMonad|WindowMaker|Moksha ]] && DM="lightdm"
 
-# The working service names from your successful run
-for svc in dbus NetworkManager elogind zramen $DM; do
+# Added 'haveged' to service loop for fast boot
+for svc in dbus NetworkManager elogind zramen haveged $DM; do
     [ -f "/mnt/etc/dinit.d/$svc" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
 done
 
@@ -168,8 +172,6 @@ done
 artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
 artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
-# --- FINISH ---
 umount -R /mnt
-sync
-whiptail --title "$TITLE" --msgbox "Installation complete! Hardware-specific drivers, Network, and Audio auto-configured." 10 60
+whiptail --title "$TITLE" --msgbox "Done! Fast-boot entropy and Zram fixes applied." 10 60
 reboot
