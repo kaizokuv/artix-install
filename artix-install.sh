@@ -303,38 +303,41 @@ if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
 fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
+# Resolve display manager before installing DEs so we never install both.
+# sddm takes priority — if Plasma is selected alongside anything else,
+# all DEs share sddm to avoid the lightdm/sddm conflict.
+if echo "$DE_CHOICES" | grep -qw "Plasma"; then
+    DM="sddm"
+else
+    DM="lightdm"
+fi
+
 # Iterate over each selected DE — DE_CHOICES is space-separated
 for DE in $DE_CHOICES; do
     case "$DE" in
         Plasma)
             artix-chroot /mnt pacman -S --noconfirm \
-                plasma kde-applications sddm sddm-dinit \
-                xdg-desktop-portal-kde plasma-pa
+                plasma kde-applications xdg-desktop-portal-kde plasma-pa
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
-                xfce4 xfce4-goodies xdg-desktop-portal-gtk \
-                lightdm lightdm-dinit lightdm-gtk-greeter
+                xfce4 xfce4-goodies xdg-desktop-portal-gtk
             ;;
         LXQt)
-            artix-chroot /mnt pacman -S --noconfirm lxqt \
-                lightdm lightdm-dinit lightdm-gtk-greeter
+            artix-chroot /mnt pacman -S --noconfirm lxqt
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm \
-                lightdm lightdm-dinit lightdm-gtk-greeter
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib xmobar dmenu xterm \
-                lightdm lightdm-dinit lightdm-gtk-greeter
+                xmonad xmonad-contrib xmobar dmenu xterm
             ;;
         WindowMaker)
             # WindowMaker is not in the Artix repos — build from source
             artix-chroot /mnt pacman -S --noconfirm \
                 wget gcc make autoconf automake libtool \
-                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng \
-                lightdm lightdm-dinit lightdm-gtk-greeter
+                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng
             artix-chroot /mnt bash -c "
                 set -e
                 cd /tmp
@@ -350,22 +353,20 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Moksha)
-            artix-chroot /mnt pacman -S --noconfirm moksha-artix \
-                lightdm lightdm-dinit lightdm-gtk-greeter
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix
             ;;
     esac
 done
 
+# Install the resolved display manager once, after all DEs are done
+if [[ "$DM" == "sddm" ]]; then
+    artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
+else
+    artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
+fi
+
 # --- STAGE 10: DINIT SERVICES ---
 mkdir -p /mnt/etc/dinit.d/boot.d
-
-# Determine display manager:
-# Pure Plasma install → sddm. Any non-Plasma DE present → lightdm.
-# sddm and lightdm conflict so we only enable one.
-DM="lightdm"
-if echo "$DE_CHOICES" | grep -qw "Plasma" && ! echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|i3|XMonad|WindowMaker|Moksha"; then
-    DM="sddm"
-fi
 
 # Service file names — not package names
 for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
