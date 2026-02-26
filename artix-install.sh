@@ -175,24 +175,39 @@ fi
 
 # --- STAGE 4: PACKAGE SELECTION ---
 
-# elif prevents AMD from overwriting NVIDIA on hybrid GPU systems
+# CPU microcode — detect actual CPU instead of installing both
+if grep -qi "intel" /proc/cpuinfo; then
+    UCODE="intel-ucode"
+elif grep -qi "amd" /proc/cpuinfo; then
+    UCODE="amd-ucode"
+else
+    UCODE=""
+fi
+
+# GPU drivers — elif prevents AMD overwriting NVIDIA on hybrid systems
+# xf86-video-intel is deprecated; modesetting (built into xorg) handles modern Intel
 if lspci | grep -qi "nvidia"; then
-    GPU_PKGS="nvidia nvidia-utils nvidia-settings"
+    GPU_PKGS="nvidia nvidia-utils"
 elif lspci | grep -qi "amd"; then
     GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 else
-    GPU_PKGS="mesa vulkan-intel xf86-video-intel"
+    GPU_PKGS="mesa"
 fi
 
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
-    dinit elogind-dinit dbus-dinit doas vi \
-    networkmanager networkmanager-dinit wpa_supplicant \
-    efibootmgr ntfs-3g dosfstools mtools \
-    libnewt xorg-server xorg-xinit \
+# base-devel moved to WindowMaker case (only needed for compilation)
+# wpa_supplicant removed — NM handles its own supplicant since 1.20
+# vi, mtools, libnewt, efibootmgr removed — redundant or only needed on live ISO
+# intel-ucode/amd-ucode replaced by auto-detected $UCODE above
+BASE_PKGS="base linux linux-firmware $UCODE \
+    dinit elogind-dinit dbus-dinit doas \
+    networkmanager networkmanager-dinit \
+    ntfs-3g dosfstools \
+    xorg-server xorg-xinit \
     haveged haveged-dinit xdg-user-dirs \
     dbus rtkit"
 
-AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
+# pavucontrol added conditionally per DE below — Plasma and COSMIC have native volume control
+AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
 
 # --- STAGE 5: BASESTRAP ---
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
@@ -362,28 +377,31 @@ fi
 for DE in $DE_CHOICES; do
     case "$DE" in
         Plasma)
+            # kde-applications is 200+ apps — install curated essentials instead
             artix-chroot /mnt pacman -S --noconfirm \
-                plasma kde-applications xdg-desktop-portal-kde plasma-pa
+                plasma xdg-desktop-portal-kde plasma-pa \
+                dolphin konsole kate ark okular gwenview kcalc
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
-                xfce4 xfce4-goodies xdg-desktop-portal-gtk
+                xfce4 xfce4-goodies xdg-desktop-portal-gtk pavucontrol
             ;;
         LXQt)
-            artix-chroot /mnt pacman -S --noconfirm lxqt
+            artix-chroot /mnt pacman -S --noconfirm lxqt pavucontrol
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm pavucontrol
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib xmobar dmenu xterm
+                xmonad xmonad-contrib xmobar dmenu xterm pavucontrol
             ;;
         WindowMaker)
             # WindowMaker is not in the Artix repos — build from source
+            # base-devel only installed here since no other DE needs a compiler
             artix-chroot /mnt pacman -S --noconfirm \
-                wget gcc make autoconf automake libtool \
-                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng
+                base-devel wget \
+                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng pavucontrol
             artix-chroot /mnt bash -c "
                 set -e
                 cd /tmp
@@ -399,7 +417,7 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Moksha)
-            artix-chroot /mnt pacman -S --noconfirm moksha-artix
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
             ;;
         Cosmic)
             # Enable galaxy repo — cosmic-* packages live there
@@ -410,11 +428,10 @@ Include = /etc/pacman.d/mirrorlist
 ' >> /etc/pacman.conf
                 pacman -Sy --noconfirm
             "
-            # seatd needed by cosmic-comp Wayland compositor for seat management
+            # seatd not used — elogind already handles seat management
             artix-chroot /mnt pacman -S --noconfirm \
                 cosmic-session cosmic-greeter \
                 greetd greetd-dinit \
-                seatd seatd-dinit \
                 xdg-desktop-portal-cosmic
             # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
@@ -443,14 +460,7 @@ fi
 mkdir -p /mnt/etc/dinit.d/boot.d
 
 # Service file names — greetd for COSMIC, sddm for Plasma, lightdm for others
-# Enable seatd when COSMIC is selected (needed by cosmic-comp Wayland compositor)
-if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-    EXTRA_SVCS="seatd"
-else
-    EXTRA_SVCS=""
-fi
-
-for svc in dbus NetworkManager elogind haveged rtkit-daemon $EXTRA_SVCS "$DM"; do
+for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
     if [ -f "/mnt/etc/dinit.d/$svc" ]; then
         artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
     else
