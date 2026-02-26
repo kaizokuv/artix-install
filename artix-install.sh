@@ -10,7 +10,6 @@ fi
 clear
 TITLE="Artix Master Installer (Dinit Optimized)"
 
-# --- HELPERS ---
 get_password() {
     local prompt="$1"; local pw=""
     while [ -z "$pw" ]; do
@@ -29,7 +28,6 @@ DISK=$(lsblk -dpnoNAME,SIZE | grep -v loop | whiptail --title "$TITLE" --menu "S
 FS_CHOICE=$(whiptail --title "$TITLE" --menu "Root Filesystem" 15 60 4 "ext4" "Standard Ext4" "btrfs" "B-Tree Filesystem" "xfs" "XFS" "f2fs" "Flash-Friendly" 3>&1 1>&2 2>&3)
 SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 "Zram" "Use zramen" "Swapfile" "Disk Swapfile" "Both" "Zram + Swapfile" "None" "No Swap" 3>&1 1>&2 2>&3)
 
-# Swap size if needed
 if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
     SWAP_SIZE=$(whiptail --title "$TITLE" --inputbox "Enter swapfile size in MB (e.g., 4096)" 10 60 "4096" 3>&1 1>&2 2>&3)
     SWAP_SIZE=$(validate_input "$SWAP_SIZE")
@@ -43,7 +41,6 @@ ROOT_PW=$(get_password "Root Password")
 USERNAME=$(whiptail --title "$TITLE" --inputbox "Username" 10 60 "user" 3>&1 1>&2 2>&3)
 USER_PW=$(get_password "User Password")
 
-# DE first, WM second
 DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop Environment" 20 70 10 \
 "Plasma" "KDE Plasma" \
 "XFCE" "XFCE4" \
@@ -99,12 +96,12 @@ if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
 fi
 [[ "$SWAP_CHOICE" =~ Zram|Both ]] && ZRAM_PKGS="zramen zramen-dinit" || ZRAM_PKGS=""
 
-# --- STAGE 4: BASE & AUDIO PACKAGES ---
+# --- STAGE 4: BASE & AUDIO ---
 GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 lspci | grep -i "nvidia" &>/dev/null && GPU_PKGS="nvidia nvidia-utils nvidia-settings"
 lspci | grep -i "amd" &>/dev/null && GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit haveged haveged-dinit xdg-user-dirs dbus-x11 rtkit rtkit-dinit"
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit haveged haveged-dinit xdg-user-dirs dbus rtkit"
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS $ZRAM_PKGS
@@ -142,7 +139,7 @@ echo "export HISTSIZE=10000" >> /mnt/home/$USERNAME/.bashrc
 echo "alias sudo='doas'" >> /mnt/home/$USERNAME/.bashrc
 artix-chroot /mnt chown $USERNAME:$USERNAME /home/$USERNAME/.bashrc
 
-# Pipewire Fix
+# Pipewire fix
 artix-chroot /mnt bash -c "cat > /etc/profile.d/pipewire-start.sh << 'EOF'
 [ \"\$UID\" -lt 1000 ] && return
 if [ -z \"\$XDG_RUNTIME_DIR\" ]; then
