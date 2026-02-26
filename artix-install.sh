@@ -184,11 +184,8 @@ BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
 
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 
-# lightdm is the unified greeter for all DEs
-DE_PKGS="lightdm lightdm-dinit lightdm-gtk-greeter"
-
 # --- STAGE 5: BASESTRAP ---
-basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS $DE_PKGS
+basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # --- STAGE 6: CHROOT CONFIGURATION ---
@@ -227,7 +224,6 @@ useradd -m -G wheel,audio,video,storage "${CONFIGURE_USERNAME}"
 printf '%s:%s\n' "${CONFIGURE_USERNAME}" "$USER_PW" | chpasswd
 
 echo "permit persist :wheel" > /etc/doas.conf
-ln -sf /usr/bin/doas /usr/bin/sudo
 
 su -s /bin/sh - "${CONFIGURE_USERNAME}" -c "xdg-user-dirs-update"
 rm /root/install_env
@@ -308,23 +304,28 @@ for DE in $DE_CHOICES; do
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
-                xfce4 xfce4-goodies xdg-desktop-portal-gtk
+                xfce4 xfce4-goodies xdg-desktop-portal-gtk \
+                lightdm lightdm-dinit lightdm-gtk-greeter
             ;;
         LXQt)
-            artix-chroot /mnt pacman -S --noconfirm lxqt
+            artix-chroot /mnt pacman -S --noconfirm lxqt \
+                lightdm lightdm-dinit lightdm-gtk-greeter
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm \
+                lightdm lightdm-dinit lightdm-gtk-greeter
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib xmobar dmenu xterm
+                xmonad xmonad-contrib xmobar dmenu xterm \
+                lightdm lightdm-dinit lightdm-gtk-greeter
             ;;
         WindowMaker)
             # WindowMaker is not in the Artix repos — build from source
             artix-chroot /mnt pacman -S --noconfirm \
                 wget gcc make autoconf automake libtool \
-                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng
+                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng \
+                lightdm lightdm-dinit lightdm-gtk-greeter
             artix-chroot /mnt bash -c "
                 set -e
                 cd /tmp
@@ -340,7 +341,8 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Moksha)
-            artix-chroot /mnt pacman -S --noconfirm moksha-artix
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix \
+                lightdm lightdm-dinit lightdm-gtk-greeter
             ;;
     esac
 done
@@ -349,7 +351,8 @@ done
 mkdir -p /mnt/etc/dinit.d/boot.d
 
 # Determine display manager:
-# Plasma gets sddm; everything else uses lightdm (already installed in base)
+# Pure Plasma install → sddm. Any non-Plasma DE present → lightdm.
+# sddm and lightdm conflict so we only enable one.
 DM="lightdm"
 if echo "$DE_CHOICES" | grep -qw "Plasma" && ! echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|i3|XMonad|WindowMaker|Moksha"; then
     DM="sddm"
