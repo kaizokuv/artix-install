@@ -30,7 +30,7 @@ get_confirmed_password() {
 
 # --- STAGE 1: INPUTS ---
 
-# mapfile into array so disk names with spaces are handled safely
+# awk prints name and size on separate lines so whiptail gets them as distinct args
 mapfile -t DISKLIST < <(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1; print $2}')
 DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
     "${DISKLIST[@]}" 3>&1 1>&2 2>&3)
@@ -58,7 +58,6 @@ TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 10 \
     $(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
-# Validated hostname — letters, numbers, hyphens only
 HOSTNAME=""
 while [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9\-]+$ ]]; do
     HOSTNAME=$(whiptail --title "$TITLE" --inputbox \
@@ -68,7 +67,6 @@ done
 
 ROOT_PW=$(get_confirmed_password "Root Password")
 
-# Validated username — must start lowercase letter, no spaces
 USERNAME=""
 while [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_\-]*$ ]]; do
     USERNAME=$(whiptail --title "$TITLE" --inputbox \
@@ -89,6 +87,8 @@ DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop Environment" 20 70 10 \
 [ $? -ne 0 ] && exit 1
 
 # --- STAGE 2: DISK OPERATIONS ---
+umount -R /mnt 2>/dev/null || true
+mkdir -p /mnt
 
 wipefs -af "$DISK"
 fdisk "$DISK" << EOF
@@ -108,14 +108,11 @@ w
 EOF
 
 udevadm settle
-
-# Determine partition suffix (nvme: /dev/nvme0n1p1, sata: /dev/sda1)
 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
 EFI="${DISK}${P}1"
 ROOT="${DISK}${P}2"
 
 mkfs.fat -F32 "$EFI"
-
 case "$FS_CHOICE" in
     ext4)  mkfs.ext4  -F "$ROOT" ;;
     btrfs) mkfs.btrfs -f "$ROOT" ;;
@@ -128,10 +125,10 @@ mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
 # --- STAGE 3: SWAP SETUP ---
-
+rm -f /mnt/swapfile
 if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
     if [[ "$FS_CHOICE" == "btrfs" ]]; then
-        # btrfs requires CoW disabled BEFORE allocating, or the swapfile won't work
+        # CoW must be disabled before allocation or the swapfile won't activate
         truncate -s 0 /mnt/swapfile
         chattr +C /mnt/swapfile
         fallocate -l 4G /mnt/swapfile
@@ -144,7 +141,7 @@ fi
 
 # --- STAGE 4: PACKAGE SELECTION ---
 
-# Use elif — without it, AMD detection overwrites NVIDIA on hybrid GPU systems
+# elif prevents AMD from overwriting NVIDIA on hybrid GPU systems
 if lspci | grep -qi "nvidia"; then
     GPU_PKGS="nvidia nvidia-utils nvidia-settings"
 elif lspci | grep -qi "amd"; then
@@ -153,6 +150,7 @@ else
     GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 fi
 
+# rtkit-dinit does not exist — rtkit ships its own dinit service file
 BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
     dinit elogind-dinit dbus-dinit doas vi \
     networkmanager networkmanager-dinit wpa_supplicant \
@@ -164,15 +162,11 @@ BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 
 # --- STAGE 5: BASESTRAP ---
-
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # --- STAGE 6: CHROOT CONFIGURATION ---
-# Passwords are base64-encoded into a separate env file so that special
-# characters ($, !, \, backticks) don't corrupt the script or get
-# misinterpreted by bash. The configure script decodes them at runtime.
-
+# Passwords are base64-encoded so special chars ($, !, \) don't break anything
 ROOT_PW_B64=$(printf '%s' "$ROOT_PW" | base64)
 USER_PW_B64=$(printf '%s' "$USER_PW" | base64)
 
@@ -186,39 +180,30 @@ CONFIGURE_HOSTNAME=${HOSTNAME}
 EOF
 chmod 600 /mnt/root/install_env
 
-# Single-quoted heredoc — no variable expansion here, all vars decoded inside
 cat > /mnt/root/configure.sh << 'CHROOT'
 #!/bin/bash
 set -e
-
 source /root/install_env
 
 ROOT_PW=$(printf '%s' "$CONFIGURE_ROOT_PW_B64" | base64 -d)
 USER_PW=$(printf '%s' "$CONFIGURE_USER_PW_B64" | base64 -d)
 
-# Locale & time
 echo "${CONFIGURE_LOCALE} UTF-8" >> /etc/locale.gen
 locale-gen
 echo "LANG=${CONFIGURE_LOCALE}" > /etc/locale.conf
 ln -sf "/usr/share/zoneinfo/${CONFIGURE_TIMEZONE}" /etc/localtime
 hwclock --systohc
 
-# Hostname
 echo "${CONFIGURE_HOSTNAME}" > /etc/hostname
 
-# Users — printf handles special chars in passwords safely
 printf '%s:%s\n' "root" "$ROOT_PW" | chpasswd
 useradd -m -G wheel,audio,video,storage "${CONFIGURE_USERNAME}"
 printf '%s:%s\n' "${CONFIGURE_USERNAME}" "$USER_PW" | chpasswd
 
-# doas config (wheel group gets sudo-like access)
 echo "permit persist :wheel" > /etc/doas.conf
 ln -sf /usr/bin/doas /usr/bin/sudo
 
-# XDG dirs
 xdg-user-dirs-update
-
-# Clean up secrets immediately
 rm /root/install_env
 CHROOT
 
@@ -226,9 +211,8 @@ chmod +x /mnt/root/configure.sh
 artix-chroot /mnt /root/configure.sh
 rm /mnt/root/configure.sh
 
-# --- STAGE 7: AUDIO SETUP (Plasma Fix) ---
-# .xprofile starts pipewire when X session launches (display manager path)
-# User dinit services handle TTY login path
+# --- STAGE 7: AUDIO SETUP ---
+mkdir -p /mnt/home/"$USERNAME"
 
 cat > /mnt/home/"$USERNAME"/.xprofile << EOF
 export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
@@ -236,114 +220,98 @@ pgrep -x pipewire      >/dev/null || pipewire &
 pgrep -x pipewire-pulse >/dev/null || pipewire-pulse &
 pgrep -x wireplumber   >/dev/null || wireplumber &
 EOF
-chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/.xprofile
 
-# Proper dinit service files for user session (not shell scripts)
+# chown by name fails outside the chroot — look up numeric UID/GID from chroot passwd
+USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
+USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
+chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.xprofile
+
 mkdir -p /mnt/home/"$USERNAME"/.config/dinit.d
 
-cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << 'EOF'
+# pipewire-pulse and wireplumber must declare depends-on so they don't race
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << EOF
 type = process
 command = /usr/bin/pipewire
 restart = true
 EOF
 
-cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire-pulse << 'EOF'
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire-pulse << EOF
 type = process
 command = /usr/bin/pipewire-pulse
 depends-on = pipewire
 restart = true
 EOF
 
-cat > /mnt/home/"$USERNAME"/.config/dinit.d/wireplumber << 'EOF'
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/wireplumber << EOF
 type = process
 command = /usr/bin/wireplumber
 depends-on = pipewire
 restart = true
 EOF
 
-chown -R "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/.config
+chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config
 
 # --- STAGE 8: ZRAM ---
-
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
     artix-chroot /mnt pacman -S --noconfirm zramen zramen-dinit
     echo 'MAX_SIZE=2048' > /mnt/etc/default/zramen
 fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
-
 case "$DE_CHOICE" in
     Plasma)
-        artix-chroot /mnt pacman -S --noconfirm \
-            plasma kde-applications sddm sddm-dinit \
+        artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm sddm-dinit \
             xdg-desktop-portal-kde plasma-pa
         ;;
     XFCE)
-        artix-chroot /mnt pacman -S --noconfirm \
-            xfce4 xfce4-goodies \
-            lightdm lightdm-dinit lightdm-gtk-greeter \
-            xdg-desktop-portal-gtk
+        artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies \
+            lightdm lightdm-dinit lightdm-gtk-greeter xdg-desktop-portal-gtk
         ;;
     LXQt)
-        artix-chroot /mnt pacman -S --noconfirm \
-            lxqt sddm sddm-dinit
+        artix-chroot /mnt pacman -S --noconfirm lxqt sddm sddm-dinit
         ;;
     i3)
-        artix-chroot /mnt pacman -S --noconfirm \
-            i3-wm dmenu \
+        artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu \
             lightdm lightdm-dinit lightdm-gtk-greeter xterm
         ;;
     XMonad)
-        artix-chroot /mnt pacman -S --noconfirm \
-            xmonad xmonad-contrib xmobar dmenu \
+        artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xmobar dmenu \
             lightdm lightdm-dinit lightdm-gtk-greeter xterm
         ;;
     WindowMaker)
-        artix-chroot /mnt pacman -S --noconfirm \
-            windowmaker \
+        artix-chroot /mnt pacman -S --noconfirm windowmaker \
             lightdm lightdm-dinit lightdm-gtk-greeter xterm
         ;;
     Moksha)
-        artix-chroot /mnt pacman -S --noconfirm \
-            moksha-artix \
+        artix-chroot /mnt pacman -S --noconfirm moksha-artix \
             lightdm lightdm-dinit lightdm-gtk-greeter
         ;;
 esac
 
 # --- STAGE 10: DINIT SERVICES ---
-
 mkdir -p /mnt/etc/dinit.d/boot.d
-
 DM="lightdm"
 [[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
 
+# Service file names — not package names (dbus, not dbus-dinit; rtkit-daemon, not rtkit-dinit)
 for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
     if [ -f "/mnt/etc/dinit.d/$svc" ]; then
-        artix-chroot /mnt ln -sf /etc/dinit.d/"$svc" /etc/dinit.d/boot.d/
+        artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
     else
         echo "Warning: dinit service '$svc' not found, skipping."
     fi
 done
 
-if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
-    artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
-fi
+[[ "$SWAP_CHOICE" =~ Zram|Both ]] && artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
 
 # --- STAGE 11: BOOTLOADER ---
-
-artix-chroot /mnt grub-install \
-    --target=x86_64-efi \
-    --efi-directory=/boot \
-    --bootloader-id=Artix
-
+artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
 artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
 # --- STAGE 12: UNMOUNT ---
-
 umount -R /mnt
 
 # --- DONE ---
-
 if whiptail --title "$TITLE" --yesno "Installation complete! Reboot now?" 10 60; then
     reboot
 else
