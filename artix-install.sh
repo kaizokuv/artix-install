@@ -212,44 +212,63 @@ artix-chroot /mnt /root/configure.sh
 rm /mnt/root/configure.sh
 
 # --- STAGE 7: AUDIO SETUP ---
+# .xprofile is skipped by SDDM on Wayland (Plasma default) — use Plasma autostart-scripts
+# which run on both X11 and Wayland. Keep .xprofile + dinit services as fallback.
+
 mkdir -p /mnt/home/"$USERNAME"
 
-cat > /mnt/home/"$USERNAME"/.xprofile << EOF
-export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
-pgrep -x pipewire      >/dev/null || pipewire &
-pgrep -x pipewire-pulse >/dev/null || pipewire-pulse &
-pgrep -x wireplumber   >/dev/null || wireplumber &
-EOF
-
-# chown by name fails outside the chroot — look up numeric UID/GID from chroot passwd
+# chown by name fails outside chroot — resolve numeric UID/GID from chroot passwd
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
+
+# Plasma autostart script (works on Wayland + X11)
+mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
+cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'AUTOSTART'
+#!/bin/bash
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
+sleep 1
+pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
+AUTOSTART
+chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
+chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/autostart-scripts
+
+# .xprofile fallback for non-Plasma / X11 DEs
+cat > /mnt/home/"$USERNAME"/.xprofile << 'XPROFILE'
+#!/bin/bash
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
+sleep 1
+pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
+XPROFILE
 chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.xprofile
 
+# User dinit service files (TTY login fallback)
 mkdir -p /mnt/home/"$USERNAME"/.config/dinit.d
 
-# pipewire-pulse and wireplumber must declare depends-on so they don't race
-cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << EOF
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << 'DSVC'
 type = process
 command = /usr/bin/pipewire
 restart = true
-EOF
+DSVC
 
-cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire-pulse << EOF
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire-pulse << 'DSVC'
 type = process
 command = /usr/bin/pipewire-pulse
 depends-on = pipewire
 restart = true
-EOF
+DSVC
 
-cat > /mnt/home/"$USERNAME"/.config/dinit.d/wireplumber << EOF
+cat > /mnt/home/"$USERNAME"/.config/dinit.d/wireplumber << 'DSVC'
 type = process
 command = /usr/bin/wireplumber
 depends-on = pipewire
 restart = true
-EOF
+DSVC
 
-chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config
+chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/dinit.d
 
 # --- STAGE 8: ZRAM ---
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
