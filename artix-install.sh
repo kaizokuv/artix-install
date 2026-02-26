@@ -203,7 +203,7 @@ printf '%s:%s\n' "${CONFIGURE_USERNAME}" "$USER_PW" | chpasswd
 echo "permit persist :wheel" > /etc/doas.conf
 ln -sf /usr/bin/doas /usr/bin/sudo
 
-xdg-user-dirs-update
+su -s /bin/sh - "${CONFIGURE_USERNAME}" -c "xdg-user-dirs-update"
 rm /root/install_env
 CHROOT
 
@@ -269,6 +269,9 @@ restart = true
 DSVC
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/dinit.d
+
+# Final ownership fix — everything in home must belong to the user, not root
+chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # --- STAGE 8: ZRAM ---
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
