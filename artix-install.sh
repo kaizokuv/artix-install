@@ -402,29 +402,29 @@ case "$BL_CHOICE" in
                 --label 'Limine' \
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
+        # Resolve values on the host before writing the config — no heredoc escaping issues
         KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt||')
         INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt||')
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        cat > /mnt/boot/limine.conf << EOF
-timeout: 5
+        # Write config with printf so variables expand cleanly without backslash confusion
+        printf 'timeout: 5
 
 /Artix Linux
     protocol: linux
-    kernel_path: boot():\$KERNEL_IMG
-    cmdline: root=UUID=\$ROOT_UUID rw quiet
-    module_path: boot():\$INITRD_IMG
-EOF
+    kernel_path: boot():%s
+    cmdline: root=UUID=%s rw quiet
+    module_path: boot():%s
+'             "$KERNEL_IMG" "$ROOT_UUID" "$INITRD_IMG" > /mnt/boot/limine.conf
         ;;
 
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        cat > /mnt/boot/refind_linux.conf << EOF
-"Boot with standard options"  "root=UUID=\$ROOT_UUID rw quiet"
-"Boot to terminal"            "root=UUID=\$ROOT_UUID rw init=/sbin/dinit"
-"Boot with minimal options"   "root=UUID=\$ROOT_UUID rw"
-EOF
+        printf '"Boot with standard options"  "root=UUID=%s rw quiet"
+"Boot to terminal"            "root=UUID=%s rw init=/sbin/dinit"
+"Boot with minimal options"   "root=UUID=%s rw"
+'             "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
         ;;
 esac
 
