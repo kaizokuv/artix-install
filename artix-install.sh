@@ -243,34 +243,77 @@ artix-chroot /mnt /root/configure.sh
 rm /mnt/root/configure.sh
 
 # --- STAGE 7: AUDIO SETUP ---
-# Plasma autostart-scripts run on both Wayland and X11 (unlike .xprofile)
-# .xprofile kept as fallback for other DEs
+# Multi-method pipewire startup to cover all DEs and WMs:
+#
+#  1. ~/.config/autostart/pipewire.desktop — XDG autostart, honoured by
+#     XFCE, LXQt, Plasma (X11), and most freedesktop-compliant DEs
+#  2. ~/.config/autostart-scripts/pipewire.sh — Plasma-specific, covers
+#     Plasma Wayland where .xprofile is skipped
+#  3. ~/.xprofile — sourced by lightdm before launching bare WMs
+#     (i3, XMonad, WindowMaker). Not reliable for full DEs but essential here.
+#  4. ~/.e/e/applications/startup/pipewire.desktop — Moksha/Enlightenment
+#     specific autostart path, ignored by everything else
 
 mkdir -p /mnt/home/"$USERNAME"
 
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
+# --- METHOD 1: XDG autostart .desktop (XFCE, LXQt, Plasma X11) ---
+mkdir -p /mnt/home/"$USERNAME"/.config/autostart
+cat > /mnt/home/"$USERNAME"/.config/autostart/pipewire.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=PipeWire Audio
+Exec=/usr/local/bin/start-pipewire
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+
+# --- METHOD 2: Plasma autostart-scripts (Plasma Wayland) ---
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
-cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'AUTOSTART'
+cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
 sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
-AUTOSTART
+EOF
 chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
 
-cat > /mnt/home/"$USERNAME"/.xprofile << 'XPROFILE'
+# --- METHOD 3: .xprofile (bare WMs: i3, XMonad, WindowMaker via lightdm) ---
+cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
 sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
-XPROFILE
+EOF
 
+# --- METHOD 4: Moksha/Enlightenment autostart ---
+mkdir -p /mnt/home/"$USERNAME"/.e/e/applications/startup
+cat > /mnt/home/"$USERNAME"/.e/e/applications/startup/pipewire.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=PipeWire Audio
+Exec=/usr/local/bin/start-pipewire
+EOF
+
+# Shared launcher script — all methods above call this so the logic lives in one place
+cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
+#!/bin/bash
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
+sleep 1
+pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
+EOF
+chmod +x /mnt/usr/local/bin/start-pipewire
+
+# --- User dinit service files (TTY login fallback) ---
 mkdir -p /mnt/home/"$USERNAME"/.config/dinit.d
 
 cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << 'DSVC'
