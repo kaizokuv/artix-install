@@ -359,10 +359,10 @@ mkdir -p /mnt/usr/local/bin
 cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-pipewire &
-sleep 0.5
-pipewire-pulse &
-wireplumber &
+pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
+sleep 1
+pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/usr/local/bin/start-pipewire
 
@@ -386,10 +386,10 @@ mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
 cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-pipewire &
-sleep 0.5
-pipewire-pulse &
-wireplumber &
+pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
+sleep 1
+pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
 
@@ -397,10 +397,10 @@ chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
 cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-pipewire &
-sleep 0.5
-pipewire-pulse &
-wireplumber &
+pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
+sleep 1
+pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 
 # Moksha
