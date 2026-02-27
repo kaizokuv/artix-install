@@ -1,4 +1,4 @@
-#!/bin/bash
+\#!/bin/bash
 set -e
 set -o pipefail
 
@@ -75,22 +75,45 @@ if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
     SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
 fi
 
-# mapfile prevents word-splitting which causes each entry to appear twice
-mapfile -t LOCALE_LIST < <(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1; print $1}')
-LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 15 \
-    "${LOCALE_LIST[@]}" 3>&1 1>&2 2>&3)
-[ $? -ne 0 ] && exit 1
+# Locale — filter first to avoid whiptail choking on 500+ items
+pick_from_list() {
+    local title="$1" prompt="$2" list_cmd="$3"
+    local filter result
+    while true; do
+        filter=$(whiptail --title "$title" --inputbox "$prompt" 10 60 "" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && exit 1
+        mapfile -t MATCHES < <(eval "$list_cmd" | grep -i "$filter" | head -50)
+        if [ ${#MATCHES[@]} -eq 0 ]; then
+            whiptail --title "$title" --msgbox "No matches for '$filter'. Try again." 8 50
+            continue
+        fi
+        # Build tag/description pairs (same value for both)
+        MENU_ARGS=()
+        for item in "${MATCHES[@]}"; do
+            MENU_ARGS+=("$item" "$item")
+        done
+        result=$(whiptail --title "$title" --menu "Results for '$filter'" 20 70 12 \
+            "${MENU_ARGS[@]}" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && continue
+        echo "$result"
+        return
+    done
+}
 
-mapfile -t TZ_LIST < <(awk '/^[^#]/ {print $3; print $3}' /usr/share/zoneinfo/zone.tab | sort)
-TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 15 \
-    "${TZ_LIST[@]}" 3>&1 1>&2 2>&3)
-[ $? -ne 0 ] && exit 1
+LOCALE=$(pick_from_list "$TITLE" \
+    "Locale — type to filter (e.g. 'en_US', 'de_DE')" \
+    "grep 'UTF-8' /usr/share/i18n/SUPPORTED | awk '{print \$1}'")
+[ -z "$LOCALE" ] && exit 1
 
-# Keyboard layout
-mapfile -t KB_LIST < <(localectl list-keymaps 2>/dev/null | awk '{print $1; print $1}')
-KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 20 70 15 \
-    "${KB_LIST[@]}" 3>&1 1>&2 2>&3)
-[ $? -ne 0 ] && exit 1
+TIMEZONE=$(pick_from_list "$TITLE" \
+    "Timezone — type to filter (e.g. 'Europe', 'America/New')" \
+    "awk '/^[^#]/ {print \$3}' /usr/share/zoneinfo/zone.tab | sort")
+[ -z "$TIMEZONE" ] && exit 1
+
+KB_LAYOUT=$(pick_from_list "$TITLE" \
+    "Keyboard layout — type to filter (e.g. 'us', 'uk', 'de')" \
+    "localectl list-keymaps 2>/dev/null")
+[ -z "$KB_LAYOUT" ] && exit 1
 
 HOSTNAME=""
 while [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9\-]+$ ]]; do
@@ -503,7 +526,7 @@ Include = /etc/pacman.d/mirrorlist
                 xdg-desktop-portal-cosmic \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower upower-dinit pavucontrol firefox
+                cosmic-settings upower pavucontrol firefox
             # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
