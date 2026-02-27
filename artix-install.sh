@@ -359,11 +359,27 @@ mkdir -p /mnt/usr/local/bin
 cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
-sleep 2
-pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
-sleep 1
-pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
+
+# Kill any stale instances first so we start clean
+pkill -u "$USER" -fx /usr/bin/pipewire-pulse 2>/dev/null || true
+pkill -u "$USER" -fx /usr/bin/wireplumber     2>/dev/null || true
+pkill -u "$USER" -fx /usr/bin/pipewire        2>/dev/null || true
+sleep 0.5
+
+# Start pipewire and wait for its socket — not a fixed sleep
+/usr/bin/pipewire &
+i=0
+while [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ] && [ $i -lt 10 ]; do
+    sleep 1; i=$((i+1))
+done
+
+# Now safe to start wireplumber and pipewire-pulse
+/usr/bin/wireplumber &
+i=0
+while [ "$(pgrep -fx /usr/bin/wireplumber)" = "" ] && [ $i -lt 10 ]; do
+    sleep 1; i=$((i+1))
+done
+/usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/usr/local/bin/start-pipewire
 
@@ -386,24 +402,14 @@ EOF
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
 cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'EOF'
 #!/bin/bash
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
-sleep 2
-pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
-sleep 1
-pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
+exec /usr/local/bin/start-pipewire
 EOF
 chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
 
 # .xprofile — bare WMs via lightdm
 cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
 #!/bin/bash
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
-sleep 2
-pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
-sleep 1
-pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
+exec /usr/local/bin/start-pipewire
 EOF
 
 # Moksha
