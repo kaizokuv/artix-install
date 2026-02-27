@@ -43,7 +43,7 @@ FS_CHOICE=$(whiptail --title "$TITLE" --menu "Root Filesystem" 15 60 4 \
 [ $? -ne 0 ] && exit 1
 
 SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
-    "Zram"     "Use zramen" \
+    "Zram"     "zram (via zramctl)" \
     "Swapfile" "Disk Swapfile" \
     "Both"     "Zram + Swapfile" \
     "None"     "No Swap" 3>&1 1>&2 2>&3)
@@ -489,12 +489,39 @@ DSVC
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # --- STAGE 8: ZRAM ---
+# zramen is unreliable on Artix — use zramctl (part of util-linux, already installed)
+# with a custom dinit oneshot service instead
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
-    artix-chroot /mnt pacman -S --noconfirm zramen zramen-dinit
-    # Use install to write the config — direct redirection fails on read-only package files
-    install -m644 /dev/null /mnt/etc/default/zramen
-    printf 'MAX_SIZE=2048
-' > /mnt/etc/default/zramen
+    # Calculate zram size = half of RAM, clamped to 8GB max
+    ZRAM_MB=$(( RAM_KB / 1024 / 2 ))
+    (( ZRAM_MB > 8192 )) && ZRAM_MB=8192
+
+    # Write the zram setup script
+    cat > /mnt/usr/local/bin/zram-setup << EOF
+#!/bin/bash
+modprobe zram
+echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || echo lzo > /sys/block/zram0/comp_algorithm
+echo ${ZRAM_MB}M > /sys/block/zram0/disksize
+mkswap /dev/zram0
+swapon -p 100 /dev/zram0
+EOF
+    chmod +x /mnt/usr/local/bin/zram-setup
+
+    # Write the zram teardown script
+    cat > /mnt/usr/local/bin/zram-teardown << 'EOF'
+#!/bin/bash
+swapoff /dev/zram0 2>/dev/null
+echo 1 > /sys/block/zram0/reset
+modprobe -r zram
+EOF
+    chmod +x /mnt/usr/local/bin/zram-teardown
+
+    # Write dinit oneshot service
+    cat > /mnt/etc/dinit.d/zram << 'EOF'
+type = scripted
+command = /usr/local/bin/zram-setup
+stop-command = /usr/local/bin/zram-teardown
+EOF
 fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
@@ -627,10 +654,10 @@ for svc in dbus NetworkManager elogind haveged rtkit-daemon $EXTRA_SVCS "$DM"; d
 done
 
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
-    if [ -f "/mnt/etc/dinit.d/zramen" ]; then
-        artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
+    if [ -f "/mnt/etc/dinit.d/zram" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/zram /etc/dinit.d/boot.d/
     else
-        echo "Warning: dinit service 'zramen' not found, skipping."
+        echo "Warning: dinit service 'zram' not found, skipping."
     fi
 fi
 
