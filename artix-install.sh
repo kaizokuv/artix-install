@@ -383,6 +383,10 @@ printf '%s:%s\n' "${CONFIGURE_USERNAME}" "$USER_PW" | chpasswd
 
 echo "permit persist :wheel" > /etc/doas.conf
 
+# kdesu (used by Plasma to launch apps with elevated privileges) hard-requires sudo
+# We keep doas as the real tool but symlink sudo -> doas for KDE compatibility
+ln -sf /usr/bin/doas /usr/bin/sudo
+
 su -s /bin/sh - "${CONFIGURE_USERNAME}" -c "xdg-user-dirs-update"
 rm /root/install_env
 CHROOT
@@ -409,6 +413,8 @@ USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
 # --- METHOD 1: XDG autostart .desktop (XFCE, LXQt, Plasma X11) ---
+# Use a wrapper that waits for XDG_RUNTIME_DIR to exist before starting pipewire
+# This fixes the race condition where autostart fires before the runtime dir is ready
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart
 cat > /mnt/home/"$USERNAME"/.config/autostart/pipewire.desktop << 'EOF'
 [Desktop Entry]
@@ -455,6 +461,15 @@ EOF
 cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+# Wait up to 10 seconds for elogind to create the runtime dir
+for i in $(seq 1 10); do
+    [ -d "$XDG_RUNTIME_DIR" ] && break
+    sleep 1
+done
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+fi
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
 sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
