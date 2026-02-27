@@ -28,6 +28,29 @@ get_confirmed_password() {
     done
 }
 
+pick_from_list() {
+    local title="$1" prompt="$2" list_cmd="$3"
+    local filter result
+    while true; do
+        filter=$(whiptail --title "$title" --inputbox "$prompt" 10 60 "" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && exit 1
+        mapfile -t MATCHES < <(eval "$list_cmd" | grep -i "$filter" | head -50)
+        if [ ${#MATCHES[@]} -eq 0 ]; then
+            whiptail --title "$title" --msgbox "No matches for '$filter'. Try again." 8 50
+            continue
+        fi
+        MENU_ARGS=()
+        for item in "${MATCHES[@]}"; do
+            MENU_ARGS+=("$item" "$item")
+        done
+        result=$(whiptail --title "$title" --menu "Results for '$filter'" 20 70 12 \
+            "${MENU_ARGS[@]}" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && continue
+        echo "$result"
+        return
+    done
+}
+
 # --- STAGE 1: INPUTS ---
 
 mapfile -t DISKLIST < <(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1; print $2}')
@@ -49,21 +72,18 @@ SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
     "None"     "No Swap" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
-# Swap size — only ask if swapfile is involved
-# Detect half of RAM in GB as the recommended swap size
+# Detect half of RAM as recommended swap size
 RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
-# Clamp to at least 1 GB and at most 16 GB
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
 (( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
 
 SWAP_SIZE_MB=2048
 if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
-    # Build menu entries — mark the RAM-recommended size with (recommended)
     SWAP_MENU_ARGS=()
     for SZ in 1 2 4 8 16; do
         if (( SZ == RAM_HALF_GB )); then
-            SWAP_MENU_ARGS+=("$SZ" "${SZ} GB  ← recommended (half your RAM)")
+            SWAP_MENU_ARGS+=("$SZ" "${SZ} GB  <- recommended (half your RAM)")
         else
             SWAP_MENU_ARGS+=("$SZ" "${SZ} GB")
         fi
@@ -75,38 +95,13 @@ if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
     SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
 fi
 
-# Locale — filter first to avoid whiptail choking on 500+ items
-pick_from_list() {
-    local title="$1" prompt="$2" list_cmd="$3"
-    local filter result
-    while true; do
-        filter=$(whiptail --title "$title" --inputbox "$prompt" 10 60 "" 3>&1 1>&2 2>&3)
-        [ $? -ne 0 ] && exit 1
-        mapfile -t MATCHES < <(eval "$list_cmd" | grep -i "$filter" | head -50)
-        if [ ${#MATCHES[@]} -eq 0 ]; then
-            whiptail --title "$title" --msgbox "No matches for '$filter'. Try again." 8 50
-            continue
-        fi
-        # Build tag/description pairs (same value for both)
-        MENU_ARGS=()
-        for item in "${MATCHES[@]}"; do
-            MENU_ARGS+=("$item" "$item")
-        done
-        result=$(whiptail --title "$title" --menu "Results for '$filter'" 20 70 12 \
-            "${MENU_ARGS[@]}" 3>&1 1>&2 2>&3)
-        [ $? -ne 0 ] && continue
-        echo "$result"
-        return
-    done
-}
-
 LOCALE=$(pick_from_list "$TITLE" \
-    "Locale — type to filter (e.g. 'en_US', 'de_DE')" \
+    "Locale — type to filter (e.g. en_US, de_DE)" \
     "grep 'UTF-8' /usr/share/i18n/SUPPORTED | awk '{print \$1}'")
 [ -z "$LOCALE" ] && exit 1
 
 TIMEZONE=$(pick_from_list "$TITLE" \
-    "Timezone — type to filter (e.g. 'Europe', 'America/New')" \
+    "Timezone — type to filter (e.g. Europe, America/New)" \
     "awk '/^[^#]/ {print \$3}' /usr/share/zoneinfo/zone.tab | sort")
 [ -z "$TIMEZONE" ] && exit 1
 
@@ -119,16 +114,12 @@ KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 22 \
     "fr"         "French" \
     "fr-bepo"    "French (Bepo)" \
     "es"         "Spanish" \
-    "es-cp850"   "Spanish (CP850)" \
     "it"         "Italian" \
-    "it2"        "Italian (IT2)" \
     "pt"         "Portuguese" \
     "br"         "Portuguese (Brazil)" \
     "br-abnt2"   "Portuguese (Brazil ABNT2)" \
     "ru"         "Russian" \
-    "ru-cp1251"  "Russian (CP1251)" \
     "pl"         "Polish" \
-    "pl2"        "Polish (PL2)" \
     "nl"         "Dutch" \
     "sv"         "Swedish" \
     "no"         "Norwegian" \
@@ -138,14 +129,11 @@ KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 22 \
     "cz"         "Czech" \
     "cz-qwerty"  "Czech (QWERTY)" \
     "sk"         "Slovak" \
-    "sk-qwerty"  "Slovak (QWERTY)" \
     "ro"         "Romanian" \
     "bg"         "Bulgarian" \
     "gr"         "Greek" \
     "tr"         "Turkish" \
-    "tr_q"       "Turkish (Q)" \
     "ua"         "Ukrainian" \
-    "by"         "Belarusian" \
     "lt"         "Lithuanian" \
     "lv"         "Latvian" \
     "et"         "Estonian" \
@@ -153,10 +141,7 @@ KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 22 \
     "ar"         "Arabic" \
     "jp106"      "Japanese (106 key)" \
     "kr"         "Korean" \
-    "cn"         "Chinese (Pinyin)" \
     "dvorak"     "Dvorak" \
-    "dvorak-l"   "Dvorak (Left-hand)" \
-    "dvorak-r"   "Dvorak (Right-hand)" \
     "colemak"    "Colemak" \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
@@ -181,7 +166,7 @@ USER_PW=$(get_confirmed_password "User Password")
 
 # Ask CLI or DE/WM first
 INSTALL_TYPE=$(whiptail --title "$TITLE" --menu "Installation Type" 12 60 2 \
-    "DE" "Desktop Environment / Window Manager" \
+    "DE"  "Desktop Environment / Window Manager" \
     "CLI" "CLI only — no graphical interface" \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
@@ -210,9 +195,9 @@ fi
 
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
     "Select kernel(s) to install" 15 70 3 \
-    "linux"     "Standard — latest stable"        ON  \
-    "linux-lts" "LTS — long term support"         OFF \
-    "linux-zen" "Zen — desktop optimised"         OFF \
+    "linux"     "Standard — latest stable"  ON  \
+    "linux-lts" "LTS — long term support"   OFF \
+    "linux-zen" "Zen — desktop optimised"   OFF \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
@@ -223,7 +208,6 @@ BL_CHOICE=$(whiptail --title "$TITLE" --menu "Bootloader" 15 70 3 \
     "limine" "Limine (fast, minimal)" \
     "refind" "rEFInd (graphical picker)" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
-
 
 # --- STAGE 2: DISK OPERATIONS ---
 umount -R /mnt 2>/dev/null || true
@@ -267,7 +251,6 @@ mount "$EFI" /mnt/boot
 rm -f /mnt/swapfile
 if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
     if [[ "$FS_CHOICE" == "btrfs" ]]; then
-        # CoW must be disabled before allocation or the swapfile won't activate
         truncate -s 0 /mnt/swapfile
         chattr +C /mnt/swapfile
         fallocate -l "${SWAP_SIZE_GB}G" /mnt/swapfile
@@ -280,7 +263,7 @@ fi
 
 # --- STAGE 4: PACKAGE SELECTION ---
 
-# CPU microcode — detect actual CPU instead of installing both
+# CPU microcode — detect actual CPU
 if grep -qi "intel" /proc/cpuinfo; then
     UCODE="intel-ucode"
 elif grep -qi "amd" /proc/cpuinfo; then
@@ -289,23 +272,17 @@ else
     UCODE=""
 fi
 
-# GPU detection — check both lspci and /proc/cpuinfo for AMD APUs
-# which may not show in lspci on some systems
+# GPU detection — check lspci and /proc/cpuinfo for AMD APUs
 if lspci | grep -qi "nvidia"; then
     GPU_PKGS="nvidia nvidia-utils"
 elif lspci | grep -qiE "amd|radeon|advanced micro" || grep -qi "amd" /proc/cpuinfo; then
     GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 else
-    # Intel or unknown — modesetting driver built into xorg handles it
     GPU_PKGS="mesa"
 fi
 
-# base-devel moved to WindowMaker case (only needed for compilation)
-# wpa_supplicant removed — NM handles its own supplicant since 1.20
-# vi, mtools, libnewt, efibootmgr removed — redundant or only needed on live ISO
-# intel-ucode/amd-ucode replaced by auto-detected $UCODE above
-# First kernel in selection goes into basestrap; extras installed after chroot
 FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+
 BASE_PKGS="base $FIRST_KERNEL linux-firmware $UCODE \
     dinit elogind-dinit dbus-dinit doas \
     networkmanager networkmanager-dinit \
@@ -314,30 +291,27 @@ BASE_PKGS="base $FIRST_KERNEL linux-firmware $UCODE \
     haveged haveged-dinit xdg-user-dirs \
     dbus rtkit"
 
-# pavucontrol added conditionally per DE below — Plasma and COSMIC have native volume control
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
 
 # --- STAGE 5: BASESTRAP ---
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-# Install any additional kernels selected beyond the first
+# Copy NetworkManager connections from live ISO so wifi works on first boot
+if [ -d /etc/NetworkManager/system-connections ]; then
+    mkdir -p /mnt/etc/NetworkManager/system-connections
+    cp /etc/NetworkManager/system-connections/* \
+        /mnt/etc/NetworkManager/system-connections/ 2>/dev/null || true
+    chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
+fi
+
+# Install any additional kernels beyond the first
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
     artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
 done
 
-# --- CARRY WIFI CONNECTION FROM LIVE ISO ---
-# Copy any active NetworkManager connections so the installed system
-# connects automatically on first boot without needing nmtui again
-if [ -d /etc/NetworkManager/system-connections ]; then
-    mkdir -p /mnt/etc/NetworkManager/system-connections
-    cp /etc/NetworkManager/system-connections/* /mnt/etc/NetworkManager/system-connections/ 2>/dev/null || true
-    chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
-fi
-
 # --- STAGE 6: CHROOT CONFIGURATION ---
-# Passwords base64-encoded so special chars ($, !, \) don't break the heredoc
 ROOT_PW_B64=$(printf '%s' "$ROOT_PW" | base64 -w0)
 USER_PW_B64=$(printf '%s' "$USER_PW" | base64 -w0)
 
@@ -368,12 +342,8 @@ hwclock --systohc
 
 echo "KEYMAP=${CONFIGURE_KB_LAYOUT}" > /etc/vconsole.conf
 mkdir -p /etc/X11/xorg.conf.d
-printf 'Section "InputClass"
-    Identifier "system-keyboard"
-    MatchIsKeyboard "on"
-    Option "XkbLayout" "%s"
-EndSection
-' "${CONFIGURE_KB_LAYOUT}" > /etc/X11/xorg.conf.d/00-keyboard.conf
+printf 'Section "InputClass"\n    Identifier "system-keyboard"\n    MatchIsKeyboard "on"\n    Option "XkbLayout" "%s"\nEndSection\n' \
+    "${CONFIGURE_KB_LAYOUT}" > /etc/X11/xorg.conf.d/00-keyboard.conf
 
 echo "${CONFIGURE_HOSTNAME}" > /etc/hostname
 
@@ -382,9 +352,7 @@ useradd -m -G wheel,audio,video,storage "${CONFIGURE_USERNAME}"
 printf '%s:%s\n' "${CONFIGURE_USERNAME}" "$USER_PW" | chpasswd
 
 echo "permit persist :wheel" > /etc/doas.conf
-
-# kdesu (used by Plasma to launch apps with elevated privileges) hard-requires sudo
-# We keep doas as the real tool but symlink sudo -> doas for KDE compatibility
+# sudo symlinked to doas — required by kdesu and various DE tools
 ln -sf /usr/bin/doas /usr/bin/sudo
 
 su -s /bin/sh - "${CONFIGURE_USERNAME}" -c "xdg-user-dirs-update"
@@ -396,25 +364,12 @@ artix-chroot /mnt /root/configure.sh
 rm /mnt/root/configure.sh
 
 # --- STAGE 7: AUDIO SETUP ---
-# Multi-method pipewire startup to cover all DEs and WMs:
-#
-#  1. ~/.config/autostart/pipewire.desktop — XDG autostart, honoured by
-#     XFCE, LXQt, Plasma (X11), and most freedesktop-compliant DEs
-#  2. ~/.config/autostart-scripts/pipewire.sh — Plasma-specific, covers
-#     Plasma Wayland where .xprofile is skipped
-#  3. ~/.xprofile — sourced by lightdm before launching bare WMs
-#     (i3, XMonad, WindowMaker). Not reliable for full DEs but essential here.
-#  4. ~/.e/e/applications/startup/pipewire.desktop — Moksha/Enlightenment
-#     specific autostart path, ignored by everything else
-
 mkdir -p /mnt/home/"$USERNAME"
 
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
-# --- METHOD 1: XDG autostart .desktop (XFCE, LXQt, Plasma X11) ---
-# Use a wrapper that waits for XDG_RUNTIME_DIR to exist before starting pipewire
-# This fixes the race condition where autostart fires before the runtime dir is ready
+# Method 1: XDG autostart .desktop — XFCE, LXQt, Plasma X11
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart
 cat > /mnt/home/"$USERNAME"/.config/autostart/pipewire.desktop << 'EOF'
 [Desktop Entry]
@@ -426,11 +381,13 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
 
-# --- METHOD 2: Plasma autostart-scripts (Plasma Wayland) ---
+# Method 2: Plasma autostart-scripts — Plasma Wayland
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
 cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+for i in $(seq 1 10); do [ -d "$XDG_RUNTIME_DIR" ] && break; sleep 1; done
+[ -d "$XDG_RUNTIME_DIR" ] || { mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"; }
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
 sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
@@ -438,17 +395,19 @@ pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
 
-# --- METHOD 3: .xprofile (bare WMs: i3, XMonad, WindowMaker via lightdm) ---
+# Method 3: .xprofile — bare WMs (i3, XMonad, WindowMaker) via lightdm
 cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+for i in $(seq 1 10); do [ -d "$XDG_RUNTIME_DIR" ] && break; sleep 1; done
+[ -d "$XDG_RUNTIME_DIR" ] || { mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"; }
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
 sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 
-# --- METHOD 4: Moksha/Enlightenment autostart ---
+# Method 4: Moksha/Enlightenment autostart
 mkdir -p /mnt/home/"$USERNAME"/.e/e/applications/startup
 cat > /mnt/home/"$USERNAME"/.e/e/applications/startup/pipewire.desktop << 'EOF'
 [Desktop Entry]
@@ -457,19 +416,12 @@ Name=PipeWire Audio
 Exec=/usr/local/bin/start-pipewire
 EOF
 
-# Shared launcher script — all methods above call this so the logic lives in one place
+# Shared launcher used by all .desktop methods
 cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-# Wait up to 10 seconds for elogind to create the runtime dir
-for i in $(seq 1 10); do
-    [ -d "$XDG_RUNTIME_DIR" ] && break
-    sleep 1
-done
-if [ ! -d "$XDG_RUNTIME_DIR" ]; then
-    mkdir -p "$XDG_RUNTIME_DIR"
-    chmod 700 "$XDG_RUNTIME_DIR"
-fi
+for i in $(seq 1 10); do [ -d "$XDG_RUNTIME_DIR" ] && break; sleep 1; done
+[ -d "$XDG_RUNTIME_DIR" ] || { mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"; }
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
 sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
@@ -477,22 +429,19 @@ pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/usr/local/bin/start-pipewire
 
-# --- User dinit service files (TTY login fallback) ---
+# User dinit services — TTY login fallback
 mkdir -p /mnt/home/"$USERNAME"/.config/dinit.d
-
 cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << 'DSVC'
 type = process
 command = /usr/bin/pipewire
 restart = true
 DSVC
-
 cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire-pulse << 'DSVC'
 type = process
 command = /usr/bin/pipewire-pulse
 depends-on = pipewire
 restart = true
 DSVC
-
 cat > /mnt/home/"$USERNAME"/.config/dinit.d/wireplumber << 'DSVC'
 type = process
 command = /usr/bin/wireplumber
@@ -500,18 +449,13 @@ depends-on = pipewire
 restart = true
 DSVC
 
-# Final recursive chown — covers everything including xdg dirs created as root
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # --- STAGE 8: ZRAM ---
-# zramen is unreliable on Artix — use zramctl (part of util-linux, already installed)
-# with a custom dinit oneshot service instead
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
-    # Calculate zram size = half of RAM, clamped to 8GB max
     ZRAM_MB=$(( RAM_KB / 1024 / 2 ))
     (( ZRAM_MB > 8192 )) && ZRAM_MB=8192
 
-    # Write the zram setup script
     cat > /mnt/usr/local/bin/zram-setup << EOF
 #!/bin/bash
 modprobe zram
@@ -522,7 +466,6 @@ swapon -p 100 /dev/zram0
 EOF
     chmod +x /mnt/usr/local/bin/zram-setup
 
-    # Write the zram teardown script
     cat > /mnt/usr/local/bin/zram-teardown << 'EOF'
 #!/bin/bash
 swapoff /dev/zram0 2>/dev/null
@@ -531,7 +474,6 @@ modprobe -r zram
 EOF
     chmod +x /mnt/usr/local/bin/zram-teardown
 
-    # Write dinit oneshot service
     cat > /mnt/etc/dinit.d/zram << 'EOF'
 type = scripted
 command = /usr/local/bin/zram-setup
@@ -540,9 +482,7 @@ EOF
 fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
-# Resolve display manager before installing DEs so we never install both.
 # Priority: COSMIC (greetd) > Plasma (sddm) > everything else (lightdm)
-# COSMIC uses its own greeter stack and conflicts with both sddm and lightdm.
 if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
     DM="greetd"
 elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
@@ -551,11 +491,9 @@ else
     DM="lightdm"
 fi
 
-# Iterate over each selected DE — DE_CHOICES is space-separated
 for DE in $DE_CHOICES; do
     case "$DE" in
         Plasma)
-            # kde-applications is 200+ apps — install curated essentials instead
             artix-chroot /mnt pacman -S --noconfirm \
                 plasma xdg-desktop-portal-kde plasma-pa \
                 dolphin konsole kate ark okular gwenview kcalc
@@ -575,21 +513,17 @@ for DE in $DE_CHOICES; do
                 xmonad xmonad-contrib xmobar dmenu xterm pavucontrol
             ;;
         WindowMaker)
-            # WindowMaker is not in the Artix repos — build from source
-            # base-devel only installed here since no other DE needs a compiler
             artix-chroot /mnt pacman -S --noconfirm \
                 base-devel wget \
                 libx11 libxext libxmu libxpm libxt libxft fontconfig libpng pavucontrol
             artix-chroot /mnt bash -c "
                 set -e
                 cd /tmp
-                # Fetch latest tarball filename from release page
                 WM_VER=\$(curl -s https://windowmaker.org/pub/source/release/ \
                     | grep -oP 'WindowMaker-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' \
                     | sort -V | tail -1)
                 [ -z \"\$WM_VER\" ] && echo 'ERROR: Could not detect WindowMaker version' && exit 1
                 wget -q https://windowmaker.org/pub/source/release/\$WM_VER
-                # Get the actual top-level directory name from the tarball
                 WM_DIR=\$(tar -tzf \$WM_VER | head -1 | cut -d/ -f1)
                 tar -xzf \$WM_VER
                 cd \$WM_DIR
@@ -603,15 +537,10 @@ for DE in $DE_CHOICES; do
             artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
             ;;
         Cosmic)
-            # Enable galaxy repo — cosmic-* packages live there
             artix-chroot /mnt bash -c "
-                grep -q '\[galaxy\]' /etc/pacman.conf || printf '
-[galaxy]
-Include = /etc/pacman.d/mirrorlist
-' >> /etc/pacman.conf
+                grep -q '\[galaxy\]' /etc/pacman.conf || printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
                 pacman -Sy --noconfirm
             "
-            # seatd not used — elogind already handles seat management
             artix-chroot /mnt pacman -S --noconfirm \
                 cosmic-session cosmic-greeter \
                 greetd greetd-dinit \
@@ -619,15 +548,13 @@ Include = /etc/pacman.d/mirrorlist
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
                 cosmic-settings upower pavucontrol firefox
-            # PAM elogind session registration — without this cosmic-osd never
-            # receives a session signal and spins polling in a tight loop
+            # PAM elogind session registration — prevents cosmic-osd CPU spin
             for pam_file in system-login greetd; do
                 PAM_PATH="/mnt/etc/pam.d/$pam_file"
                 if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind" "$PAM_PATH"; then
                     echo "session required pam_elogind.so" >> "$PAM_PATH"
                 fi
             done
-            # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
 [terminal]
@@ -641,10 +568,10 @@ EOF
     esac
 done
 
-# Install the resolved display manager — skip entirely for CLI-only
+# Install display manager — skip for CLI
 if [ "$DE_CHOICES" != "CLI" ]; then
     if [[ "$DM" == "greetd" ]]; then
-        : # greetd already installed in the Cosmic case above
+        : # already installed in Cosmic case
     elif [[ "$DM" == "sddm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
     else
@@ -655,8 +582,6 @@ fi
 # --- STAGE 10: DINIT SERVICES ---
 mkdir -p /mnt/etc/dinit.d/boot.d
 
-# Service file names — greetd for COSMIC, sddm for Plasma, lightdm for others
-# Add upower to service list when COSMIC is selected
 EXTRA_SVCS=""
 echo "$DE_CHOICES" | grep -qw "Cosmic" && EXTRA_SVCS="upower"
 
@@ -686,7 +611,6 @@ case "$BL_CHOICE" in
             --bootloader-id=Artix
         artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
         ;;
-
     limine)
         artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
         artix-chroot /mnt bash -c "
@@ -698,37 +622,24 @@ case "$BL_CHOICE" in
                 --label 'Limine' \
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
-        # Resolve values on the host before writing the config — no heredoc escaping issues
-        # Strip /mnt/boot — EFI partition IS /boot so limine paths are relative to it
-        # vmlinuz-* glob handles the kernel image regardless of name
         KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt/boot||')
         INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt/boot||')
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        printf 'timeout: 5
-
-/Artix Linux
-    protocol: linux
-    kernel_path: boot():%s
-    cmdline: root=UUID=%s rw quiet
-    module_path: boot():%s
-'             "$KERNEL_IMG" "$ROOT_UUID" "$INITRD_IMG" > /mnt/boot/limine.conf
+        printf 'timeout: 5\n\n/Artix Linux\n    protocol: linux\n    kernel_path: boot():%s\n    cmdline: root=UUID=%s rw quiet\n    module_path: boot():%s\n' \
+            "$KERNEL_IMG" "$ROOT_UUID" "$INITRD_IMG" > /mnt/boot/limine.conf
         ;;
-
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        printf '"Boot with standard options"  "root=UUID=%s rw quiet"
-"Boot to terminal"            "root=UUID=%s rw init=/sbin/dinit"
-"Boot with minimal options"   "root=UUID=%s rw"
-'             "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
+        printf '"Boot with standard options"  "root=UUID=%s rw quiet"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/dinit"\n"Boot with minimal options"   "root=UUID=%s rw"\n' \
+            "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
         ;;
 esac
 
 # --- STAGE 12: UNMOUNT ---
 umount -R /mnt
 
-# --- DONE ---
 if whiptail --title "$TITLE" --yesno "Installation complete! Reboot now?" 10 60; then
     reboot
 else
