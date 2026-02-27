@@ -59,14 +59,18 @@ RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 
 SWAP_SIZE_MB=2048
 if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
-    SWAP_SIZE_GB=$(whiptail --title "$TITLE" --menu "Swapfile Size (recommended: ${RAM_HALF_GB} GB = half your RAM)" 15 70 5 \
-        "1"  "1 GB" \
-        "2"  "2 GB" \
-        "4"  "4 GB" \
-        "8"  "8 GB" \
-        "16" "16 GB" 3>&1 1>&2 2>&3)
+    # Build menu entries — mark the RAM-recommended size with (recommended)
+    SWAP_MENU_ARGS=()
+    for SZ in 1 2 4 8 16; do
+        if (( SZ == RAM_HALF_GB )); then
+            SWAP_MENU_ARGS+=("$SZ" "${SZ} GB  ← recommended (half your RAM)")
+        else
+            SWAP_MENU_ARGS+=("$SZ" "${SZ} GB")
+        fi
+    done
+    SWAP_SIZE_GB=$(whiptail --title "$TITLE" --menu "Swapfile Size" 15 70 5 \
+        "${SWAP_MENU_ARGS[@]}" 3>&1 1>&2 2>&3)
     [ $? -ne 0 ] && exit 1
-    # Default to recommended if user somehow gets an empty value
     SWAP_SIZE_GB="${SWAP_SIZE_GB:-$RAM_HALF_GB}"
     SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
 fi
@@ -214,6 +218,15 @@ AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
+# --- CARRY WIFI CONNECTION FROM LIVE ISO ---
+# Copy any active NetworkManager connections so the installed system
+# connects automatically on first boot without needing nmtui again
+if [ -d /etc/NetworkManager/system-connections ]; then
+    mkdir -p /mnt/etc/NetworkManager/system-connections
+    cp /etc/NetworkManager/system-connections/* /mnt/etc/NetworkManager/system-connections/ 2>/dev/null || true
+    chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
+fi
+
 # --- STAGE 6: CHROOT CONFIGURATION ---
 # Passwords base64-encoded so special chars ($, !, \) don't break the heredoc
 ROOT_PW_B64=$(printf '%s' "$ROOT_PW" | base64)
@@ -359,7 +372,10 @@ chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 # --- STAGE 8: ZRAM ---
 if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
     artix-chroot /mnt pacman -S --noconfirm zramen zramen-dinit
-    echo 'MAX_SIZE=2048' > /mnt/etc/default/zramen
+    # Use install to write the config — direct redirection fails on read-only package files
+    install -m644 /dev/null /mnt/etc/default/zramen
+    printf 'MAX_SIZE=2048
+' > /mnt/etc/default/zramen
 fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
@@ -441,7 +457,9 @@ Include = /etc/pacman.d/mirrorlist
                 xdg-desktop-portal-cosmic \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings pavucontrol
+                cosmic-settings upower pavucontrol
+            # Enable upower so COSMIC battery applet gets readings
+            artix-chroot /mnt ln -sf /etc/dinit.d/upower /etc/dinit.d/boot.d/ 2>/dev/null || true
             # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
