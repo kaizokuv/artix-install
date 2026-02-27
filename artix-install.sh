@@ -312,12 +312,12 @@ for K in $KERNEL_CHOICES; do
 done
 
 # --- STAGE 6: CHROOT CONFIGURATION ---
-ROOT_PW_B64=$(printf '%s' "$ROOT_PW" | base64 -w0)
-USER_PW_B64=$(printf '%s' "$USER_PW" | base64 -w0)
+# Write passwords to tightly-permissioned files — avoids base64/heredoc encoding issues
+printf '%s' "$ROOT_PW" > /mnt/root/root_pw
+printf '%s' "$USER_PW" > /mnt/root/user_pw
+chmod 600 /mnt/root/root_pw /mnt/root/user_pw
 
 cat > /mnt/root/install_env << EOF
-CONFIGURE_ROOT_PW_B64=${ROOT_PW_B64}
-CONFIGURE_USER_PW_B64=${USER_PW_B64}
 CONFIGURE_USERNAME=${USERNAME}
 CONFIGURE_LOCALE=${LOCALE}
 CONFIGURE_TIMEZONE=${TIMEZONE}
@@ -331,8 +331,9 @@ cat > /mnt/root/configure.sh << 'CHROOT'
 set -e
 source /root/install_env
 
-ROOT_PW=$(printf '%s' "$CONFIGURE_ROOT_PW_B64" | base64 -d)
-USER_PW=$(printf '%s' "$CONFIGURE_USER_PW_B64" | base64 -d)
+# Read passwords directly from files — no encoding/decoding needed
+ROOT_PW=$(cat /root/root_pw)
+USER_PW=$(cat /root/user_pw)
 
 echo "${CONFIGURE_LOCALE} UTF-8" >> /etc/locale.gen
 locale-gen
@@ -342,8 +343,7 @@ hwclock --systohc
 
 echo "KEYMAP=${CONFIGURE_KB_LAYOUT}" > /etc/vconsole.conf
 mkdir -p /etc/X11/xorg.conf.d
-printf 'Section "InputClass"\n    Identifier "system-keyboard"\n    MatchIsKeyboard "on"\n    Option "XkbLayout" "%s"\nEndSection\n' \
-    "${CONFIGURE_KB_LAYOUT}" > /etc/X11/xorg.conf.d/00-keyboard.conf
+printf 'Section "InputClass"\n    Identifier "system-keyboard"\n    MatchIsKeyboard "on"\n    Option "XkbLayout" "%s"\nEndSection\n'     "${CONFIGURE_KB_LAYOUT}" > /etc/X11/xorg.conf.d/00-keyboard.conf
 
 echo "${CONFIGURE_HOSTNAME}" > /etc/hostname
 
@@ -352,11 +352,10 @@ useradd -m -G wheel,audio,video,storage "${CONFIGURE_USERNAME}"
 printf '%s:%s\n' "${CONFIGURE_USERNAME}" "$USER_PW" | chpasswd
 
 echo "permit persist :wheel" > /etc/doas.conf
-# sudo symlinked to doas — required by kdesu and various DE tools
 ln -sf /usr/bin/doas /usr/bin/sudo
 
 su -s /bin/sh - "${CONFIGURE_USERNAME}" -c "xdg-user-dirs-update"
-rm /root/install_env
+rm /root/install_env /root/root_pw /root/user_pw
 CHROOT
 
 chmod +x /mnt/root/configure.sh
