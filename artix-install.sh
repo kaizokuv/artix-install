@@ -576,14 +576,7 @@ Include = /etc/pacman.d/mirrorlist
                 xdg-desktop-portal-cosmic \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower pavucontrol firefox \
-                dbus-broker dbus-broker-dinit
-            # Switch from dbus-daemon to dbus-broker — broker handles missing
-            # D-Bus activatable services gracefully instead of letting callers
-            # like cosmic-settings and cosmic-osd spin at 100% CPU
-            artix-chroot /mnt bash -c "
-                pacman -Rdd --noconfirm dbus 2>/dev/null || true
-            "
+                cosmic-settings upower pavucontrol firefox
             # PAM elogind session registration — without this cosmic-osd never
             # receives a session signal and spins polling in a tight loop
             for pam_file in system-login greetd; do
