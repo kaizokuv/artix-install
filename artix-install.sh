@@ -110,7 +110,7 @@ TIMEZONE=$(pick_from_list "$TITLE" \
     "awk '/^[^#]/ {print \$3}' /usr/share/zoneinfo/zone.tab | sort")
 [ -z "$TIMEZONE" ] && exit 1
 
-KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 20 72 15 \
+KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 22 \
     "us"         "English (US)" \
     "uk"         "English (UK)" \
     "us-intl"    "English (US International)" \
@@ -179,29 +179,33 @@ done
 
 USER_PW=$(get_confirmed_password "User Password")
 
-# Multi-select DE/WM — whiptail checklist returns space-separated quoted selections
-DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select Desktop Environments / WMs (space to select, enter to confirm)" 24 70 12 \
-    "Plasma"      "KDE Plasma"                      OFF \
-    "XFCE"        "XFCE4"                            OFF \
-    "LXQt"        "LXQt"                             OFF \
-    "i3"          "i3wm"                             OFF \
-    "XMonad"      "XMonad"                           OFF \
-    "WindowMaker" "WindowMaker (built from source)"  OFF \
-    "Moksha"      "Moksha"                           OFF \
-    "Cosmic"      "COSMIC (System76) [EXPERIMENTAL]" OFF \
-    "CLI"         "No GUI — CLI only"                OFF \
+# Ask CLI or DE/WM first
+INSTALL_TYPE=$(whiptail --title "$TITLE" --menu "Installation Type" 12 60 2 \
+    "DE" "Desktop Environment / Window Manager" \
+    "CLI" "CLI only — no graphical interface" \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
-# Strip quotes whiptail adds around each selection
-DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
-if [ -z "$DE_CHOICES" ]; then
-    whiptail --title "$TITLE" --msgbox "No environment selected. Exiting." 8 50
-    exit 1
-fi
-# CLI-only is valid — skip DE install entirely if that is the only selection
-if [ "$DE_CHOICES" = "CLI" ]; then
-    whiptail --title "$TITLE" --msgbox "CLI-only selected. No desktop will be installed." 8 60
+
+if [ "$INSTALL_TYPE" = "CLI" ]; then
+    DE_CHOICES="CLI"
+else
+    DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
+        "Select Desktop Environments / WMs (space to select, enter to confirm)" 24 70 12 \
+        "Plasma"      "KDE Plasma"                      OFF \
+        "XFCE"        "XFCE4"                            OFF \
+        "LXQt"        "LXQt"                             OFF \
+        "i3"          "i3wm"                             OFF \
+        "XMonad"      "XMonad"                           OFF \
+        "WindowMaker" "WindowMaker (built from source)"  OFF \
+        "Moksha"      "Moksha"                           OFF \
+        "Cosmic"      "COSMIC (System76) [EXPERIMENTAL]" OFF \
+        3>&1 1>&2 2>&3)
+    [ $? -ne 0 ] && exit 1
+    DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
+    if [ -z "$DE_CHOICES" ]; then
+        whiptail --title "$TITLE" --msgbox "No environment selected. Exiting." 8 50
+        exit 1
+    fi
 fi
 
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
