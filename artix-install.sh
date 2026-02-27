@@ -360,8 +360,9 @@ cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
-sleep 1
+sleep 2
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+sleep 1
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/usr/local/bin/start-pipewire
@@ -387,8 +388,9 @@ cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
-sleep 1
+sleep 2
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+sleep 1
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
@@ -398,8 +400,9 @@ cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 pgrep -x pipewire       >/dev/null || /usr/bin/pipewire &
-sleep 1
+sleep 2
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
+sleep 1
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 EOF
 
