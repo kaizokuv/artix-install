@@ -457,9 +457,7 @@ Include = /etc/pacman.d/mirrorlist
                 xdg-desktop-portal-cosmic \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower pavucontrol
-            # Enable upower so COSMIC battery applet gets readings
-            artix-chroot /mnt ln -sf /etc/dinit.d/upower /etc/dinit.d/boot.d/ 2>/dev/null || true
+                cosmic-settings upower upower-dinit pavucontrol firefox
             # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
@@ -487,7 +485,11 @@ fi
 mkdir -p /mnt/etc/dinit.d/boot.d
 
 # Service file names — greetd for COSMIC, sddm for Plasma, lightdm for others
-for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
+# Add upower to service list when COSMIC is selected
+EXTRA_SVCS=""
+echo "$DE_CHOICES" | grep -qw "Cosmic" && EXTRA_SVCS="upower"
+
+for svc in dbus NetworkManager elogind haveged rtkit-daemon $EXTRA_SVCS "$DM"; do
     if [ -f "/mnt/etc/dinit.d/$svc" ]; then
         artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
     else
@@ -495,8 +497,13 @@ for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
     fi
 done
 
-[[ "$SWAP_CHOICE" =~ Zram|Both ]] && \
-    artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
+if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
+    if [ -f "/mnt/etc/dinit.d/zramen" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
+    else
+        echo "Warning: dinit service 'zramen' not found, skipping."
+    fi
+fi
 
 # --- STAGE 11: BOOTLOADER ---
 case "$BL_CHOICE" in
