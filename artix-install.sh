@@ -19,6 +19,23 @@ fi
 clear
 TITLE="Artix Master Installer"
 
+whiptail --title "$TITLE" --msgbox "Welcome to the Artix Linux Installer
+
+This script will guide you through a minimal, bloat-free
+installation of Artix Linux with dinit.
+
+You will be asked to configure:
+  - Disk, filesystem and swap
+  - Locale, timezone and keyboard layout
+  - Hostname and user account
+  - Desktop environment (or CLI-only)
+  - Kernel and bootloader
+
+WARNING: This will erase the selected disk entirely.
+Make sure you have backups before continuing.
+
+Press Enter to begin." 22 60
+
 # =========================
 # HELPERS
 # =========================
