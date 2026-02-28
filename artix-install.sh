@@ -487,7 +487,16 @@ for DE in $DE_CHOICES; do
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib xmobar dmenu xterm pavucontrol
+                xmonad xmonad-contrib xmobar dmenu xterm pavucontrol \
+                thunar polybar picom st git
+            # Clone dotfiles into ~/.config
+            artix-chroot /mnt bash -c "
+                mkdir -p /home/$USERNAME/.config
+                git clone https://github.com/feribsd/xmonad-dotfiles.git /tmp/xmonad-dotfiles
+                cp -r /tmp/xmonad-dotfiles/. /home/$USERNAME/.config/
+                rm -rf /tmp/xmonad-dotfiles
+                chown -R $USERNAME:$USERNAME /home/$USERNAME/.config/
+            "
             ;;
         WindowMaker)
             artix-chroot /mnt pacman -S --noconfirm \
