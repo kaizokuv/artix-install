@@ -609,37 +609,41 @@ for DE in $DE_CHOICES; do
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
             ;;
-            Cosmic)
+Cosmic)
     artix-chroot /mnt bash -c "
         grep -q '\[galaxy\]' /etc/pacman.conf || printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
         pacman -Sy --noconfirm
     "
 
     artix-chroot /mnt pacman -S --noconfirm \
-        cosmic-session cosmic-greeter greetd greetd-dinit \
+        cosmic-session cosmic-comp cosmic-greeter \
+        greetd greetd-dinit \
         xdg-desktop-portal-cosmic xdg-user-dirs-gtk \
         cosmic-terminal cosmic-files cosmic-text-editor \
         cosmic-player cosmic-store cosmic-screenshot \
         cosmic-settings upower pavucontrol firefox
 
+    # create greeter user if missing
     artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
-    artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
+        artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
 
+    # fix PAM for elogind (required)
     for pam_file in system-login greetd; do
         PAM_PATH="/mnt/etc/pam.d/$pam_file"
-        if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind" "$PAM_PATH"; then
+        if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind.so" "$PAM_PATH"; then
             echo "session required pam_elogind.so" >> "$PAM_PATH"
         fi
     done
 
     mkdir -p /mnt/etc/greetd
 
+    # THIS is the critical fix
     cat > /mnt/etc/greetd/config.toml << 'EOF'
 [terminal]
 vt = 1
 
 [default_session]
-command = "dbus-run-session cosmic-greeter"
+command = "cosmic-comp cosmic-greeter"
 user = "cosmic-greeter"
 EOF
 ;;
