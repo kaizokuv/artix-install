@@ -227,9 +227,9 @@ fi
 # =========================
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
     "Select kernel(s)" 18 70 4 \
-    "linux"         "Standard"                                        ON  \
+    "linux"         "Standard"                                        OFF  \
     "linux-lts"     "LTS — long term support"                         OFF \
-    "linux-zen"     "Zen — desktop optimised"                         OFF \
+    "linux-zen"     "Zen — desktop optimised"                         ON \
     "linux-cachyos" "CachyOS — BORE scheduler + perf (adds CachyOS repo)" OFF \
     3>&1 1>&2 2>&3) || exit 1
 KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
@@ -609,33 +609,41 @@ for DE in $DE_CHOICES; do
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
             ;;
-        Cosmic)
-            artix-chroot /mnt bash -c "
-                grep -q '\[galaxy\]' /etc/pacman.conf || printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-                pacman -Sy --noconfirm
-            "
-            artix-chroot /mnt pacman -S --noconfirm \
-                cosmic-session cosmic-greeter greetd greetd-dinit \
-                xdg-desktop-portal-cosmic \
-                cosmic-terminal cosmic-files cosmic-text-editor \
-                cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower pavucontrol firefox
-            for pam_file in system-login greetd; do
-                PAM_PATH="/mnt/etc/pam.d/$pam_file"
-                if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind" "$PAM_PATH"; then
-                    echo "session required pam_elogind.so" >> "$PAM_PATH"
-                fi
-            done
-            mkdir -p /mnt/etc/greetd
-            cat > /mnt/etc/greetd/config.toml << 'EOF'
+            Cosmic)
+    artix-chroot /mnt bash -c "
+        grep -q '\[galaxy\]' /etc/pacman.conf || printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+        pacman -Sy --noconfirm
+    "
+
+    artix-chroot /mnt pacman -S --noconfirm \
+        cosmic-session cosmic-greeter greetd greetd-dinit \
+        xdg-desktop-portal-cosmic xdg-user-dirs-gtk cosmic-portal \
+        cosmic-terminal cosmic-files cosmic-text-editor \
+        cosmic-player cosmic-store cosmic-screenshot \
+        cosmic-settings upower pavucontrol firefox
+
+    artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
+    artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
+
+    for pam_file in system-login greetd; do
+        PAM_PATH="/mnt/etc/pam.d/$pam_file"
+        if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind" "$PAM_PATH"; then
+            echo "session required pam_elogind.so" >> "$PAM_PATH"
+        fi
+    done
+
+    mkdir -p /mnt/etc/greetd
+
+    cat > /mnt/etc/greetd/config.toml << 'EOF'
 [terminal]
 vt = 1
 
 [default_session]
-command = "cosmic-comp cosmic-greeter"
+command = "dbus-run-session cosmic-greeter"
 user = "cosmic-greeter"
 EOF
-            ;;
+;;
+
     esac
 done
 
