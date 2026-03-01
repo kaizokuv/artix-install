@@ -299,7 +299,7 @@ basestrap /mnt \
     networkmanager networkmanager-dinit \
     doas rtkit haveged haveged-dinit \
     xorg-server xorg-xinit xdg-user-dirs \
-    ntfs-3g dosfstools \
+    dosfstools \
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils \
     $GPU
 
@@ -410,9 +410,7 @@ cat > /mnt/home/"$USERNAME"/.config/autostart/pipewire.desktop << 'EOF'
 Type=Application
 Name=PipeWire
 Exec=/usr/local/bin/start-pipewire
-Hidden=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
+X-KDE-autostart-phase=1
 EOF
 
 # Plasma autostart-scripts — covers Plasma Wayland
@@ -489,22 +487,31 @@ for DE in $DE_CHOICES; do
     case "$DE" in
         Plasma)
             artix-chroot /mnt pacman -S --noconfirm \
-                plasma xdg-desktop-portal-kde plasma-pa \
-                dolphin konsole kate ark okular gwenview kcalc
+                plasma xdg-desktop-portal-kde plasma-pa
+            if whiptail --title "$TITLE" --yesno "Install KDE apps?\n\ndolphin — file manager\nkonsole — terminal\nkate    — text editor\nark     — archive manager\nokular  — document viewer\ngwenview— image viewer\nkcalc   — calculator" 18 50; then
+                artix-chroot /mnt pacman -S --noconfirm \
+                    dolphin konsole kate ark okular gwenview kcalc
+            fi
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
-                xfce4 xfce4-goodies xdg-desktop-portal-gtk pavucontrol
+                xfce4 xdg-desktop-portal-gtk pavucontrol
+            if whiptail --title "$TITLE" --yesno "Install XFCE extras?\n\nxfce4-goodies — extra panel plugins, thunar plugins,\nscreenshot tool, archive manager, media player, etc." 13 55; then
+                artix-chroot /mnt pacman -S --noconfirm xfce4-goodies
+            fi
             ;;
         LXQt)
             artix-chroot /mnt pacman -S --noconfirm lxqt pavucontrol
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm i3-wm pavucontrol
+            if whiptail --title "$TITLE" --yesno "Install i3 extras?\n\ndmenu  — application launcher\nxterm  — basic terminal" 12 50; then
+                artix-chroot /mnt pacman -S --noconfirm dmenu xterm
+            fi
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib xmobar dmenu xterm pavucontrol \
+                xmonad xmonad-contrib pavucontrol \
                 thunar polybar picom st git
             # Clone dotfiles into ~/.config
             artix-chroot /mnt bash -c "
@@ -583,7 +590,13 @@ fi
 # =========================
 mkdir -p /mnt/etc/dinit.d/boot.d
 
-SVCS="dbus NetworkManager elogind haveged"
+# CPU governor — schedutil gives full speed when needed, backs off when idle
+artix-chroot /mnt pacman -S --noconfirm cpupower cpupower-dinit
+cat > /mnt/etc/cpupower.conf << 'EOF'
+governor='schedutil'
+EOF
+
+SVCS="dbus NetworkManager elogind haveged cpupower"
 if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
     SVCS="$SVCS rtkit-daemon"
 elif [ -f /mnt/etc/dinit.d/rtkit ]; then
