@@ -226,10 +226,11 @@ fi
 # KERNEL
 # =========================
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select kernel(s)" 15 60 3 \
-    "linux"     "Standard"        ON  \
-    "linux-lts" "LTS"             OFF \
-    "linux-zen" "Zen (optimised)" OFF \
+    "Select kernel(s)" 18 70 4 \
+    "linux"         "Standard"                                        ON  \
+    "linux-lts"     "LTS — long term support"                         OFF \
+    "linux-zen"     "Zen — desktop optimised"                         OFF \
+    "linux-cachyos" "CachyOS — BORE scheduler + perf (adds CachyOS repo)" OFF \
     3>&1 1>&2 2>&3) || exit 1
 KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
 [ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
@@ -311,6 +312,20 @@ else
 fi
 
 # =========================
+# CACHYOS REPO (if needed)
+# =========================
+if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
+    pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com 2>/dev/null || true
+    pacman-key --lsign-key F3B607488DB35A47 2>/dev/null || true
+    pacman -U --noconfirm --needed \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst' 2>/dev/null || true
+    grep -q '\[cachyos\]' /etc/pacman.conf || \
+        printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
+    pacman -Sy 2>/dev/null || true
+fi
+
+# =========================
 # BASESTRAP
 # =========================
 basestrap /mnt \
@@ -329,6 +344,18 @@ fstabgen -U /mnt >> /mnt/etc/fstab
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
 
+# Persist CachyOS repo into installed system for future updates
+if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
+    artix-chroot /mnt pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com 2>/dev/null || true
+    artix-chroot /mnt pacman-key --lsign-key F3B607488DB35A47 2>/dev/null || true
+    artix-chroot /mnt pacman -U --noconfirm --needed \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst' 2>/dev/null || true
+    grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
+        printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman -Sy --noconfirm
+fi
+
 # Copy wifi connections from live ISO
 if [ -d /etc/NetworkManager/system-connections ]; then
     mkdir -p /mnt/etc/NetworkManager/system-connections
@@ -340,7 +367,11 @@ fi
 # Extra kernels
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
-    artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
+    if [ "$K" = "linux-cachyos" ]; then
+        artix-chroot /mnt pacman -S --noconfirm linux-cachyos
+    else
+        artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
+    fi
 done
 
 # =========================
@@ -501,8 +532,26 @@ fi
 for DE in $DE_CHOICES; do
     case "$DE" in
         Plasma)
+            # plasma-desktop instead of plasma group — cuts ~300MB and 0.5GB RAM usage
+            # Hand-picked essentials only: shell, compositor, settings, network, audio,
+            # notifications, power management, display config, bluetooth, theming
             artix-chroot /mnt pacman -S --noconfirm \
-                plasma xdg-desktop-portal-kde plasma-pa
+                plasma-desktop        `# core desktop shell` \
+                kwin                  `# compositor/window manager` \
+                plasma-pa             `# audio volume applet` \
+                plasma-nm             `# network manager applet` \
+                powerdevil            `# power management` \
+                bluedevil             `# bluetooth` \
+                kscreen               `# display configuration` \
+                ksystemstats          `# system monitor backend` \
+                kde-gtk-config        `# GTK app theming integration` \
+                breeze                `# default theme` \
+                breeze-gtk            `# GTK breeze theme` \
+                knotifications        `# notification framework` \
+                kwallet               `# credential storage` \
+                polkit-kde-agent      `# privilege escalation dialogs` \
+                xdg-desktop-portal-kde \
+                sddm-kcm              `# SDDM settings in system settings`
             if [ "${PLASMA_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm \
                     dolphin konsole kate ark okular gwenview kcalc firefox fastfetch
