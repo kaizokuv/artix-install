@@ -631,6 +631,16 @@ for DE in $DE_CHOICES; do
                     echo "session required pam_elogind.so" >> "$PAM_PATH"
                 fi
             done
+            # Stub out systemd dbus interfaces that cosmic-osd/cosmic-settings poll for
+            # Without these stubs they spin at 99% CPU waiting for a response that never comes
+            mkdir -p /mnt/usr/share/dbus-1/services
+            for svc in org.freedesktop.systemd1 org.freedesktop.login1; do
+                cat > "/mnt/usr/share/dbus-1/services/${svc}.service" << DBUSEOF
+[D-BUS Service]
+Name=${svc}
+Exec=/bin/false
+DBUSEOF
+            done
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
 [terminal]
