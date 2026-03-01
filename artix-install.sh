@@ -615,7 +615,8 @@ for DE in $DE_CHOICES; do
                 pacman -Sy --noconfirm
             "
             artix-chroot /mnt pacman -S --noconfirm \
-                cosmic-session cosmic-comp cosmic-greeter greetd greetd-dinit \
+                cosmic-session cosmic-comp cosmic-greeter \
+                greetd greetd-dinit \
                 xdg-desktop-portal-cosmic xdg-user-dirs-gtk \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
@@ -623,19 +624,12 @@ for DE in $DE_CHOICES; do
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
-            # Turnstile — dinit equivalent of systemd --user session management
-            # Required for COSMIC to get a proper dbus user session
-            artix-chroot /mnt pacman -S --noconfirm turnstile turnstile-dinit
-            # Leave manage_rundir at default (no) — elogind already manages /run/user/UID
-            # Setting manage_rundir=yes would conflict with elogind
-            # PAM turnstile + elogind session registration
+            # PAM elogind session registration
             for pam_file in system-login greetd; do
                 PAM_PATH="/mnt/etc/pam.d/$pam_file"
-                [ -f "$PAM_PATH" ] || continue
-                grep -q "pam_turnstile" "$PAM_PATH" || \
-                    sed -i '1s/^/session  required  pam_turnstile.so\n/' "$PAM_PATH"
-                grep -q "pam_elogind" "$PAM_PATH" || \
-                    echo "session  required  pam_elogind.so" >> "$PAM_PATH"
+                if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind.so" "$PAM_PATH"; then
+                    echo "session required pam_elogind.so" >> "$PAM_PATH"
+                fi
             done
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
@@ -643,26 +637,7 @@ for DE in $DE_CHOICES; do
 vt = 1
 
 [default_session]
-command = "env RUST_LOG=warn SYSTEMD_LOG_TARGET=console cosmic-session"
-user = "cosmic-greeter"
-EOF
-            # Wrapper to suppress journald dependency entirely
-            cat > /mnt/usr/local/bin/start-cosmic << 'EOF'
-#!/bin/bash
-export RUST_LOG=warn
-export SYSTEMD_LOG_TARGET=console
-export XDG_SESSION_TYPE=wayland
-export XDG_CURRENT_DESKTOP=COSMIC
-exec /usr/bin/cosmic-session
-EOF
-            chmod +x /mnt/usr/local/bin/start-cosmic
-            # Update greetd to use wrapper
-            cat > /mnt/etc/greetd/config.toml << 'EOF'
-[terminal]
-vt = 1
-
-[default_session]
-command = "/usr/local/bin/start-cosmic"
+command = "cosmic-comp cosmic-greeter"
 user = "cosmic-greeter"
 EOF
             ;;
