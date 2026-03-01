@@ -623,12 +623,22 @@ for DE in $DE_CHOICES; do
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
-            # PAM elogind session registration — prevents CPU spin
+            # Turnstile — dinit equivalent of systemd --user session management
+            # Required for COSMIC to get a proper dbus user session
+            artix-chroot /mnt pacman -S --noconfirm turnstile turnstile-dinit pambase-turnstile
+            # Enable rundir management so /run/user/UID gets created
+            mkdir -p /mnt/etc/turnstile
+            cat > /mnt/etc/turnstile/turnstiled.conf << 'TEOF'
+manage_rundir = yes
+TEOF
+            # PAM turnstile session — must come before elogind in pam stack
             for pam_file in system-login greetd; do
                 PAM_PATH="/mnt/etc/pam.d/$pam_file"
-                if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind" "$PAM_PATH"; then
+                [ -f "$PAM_PATH" ] || continue
+                grep -q "pam_turnstile" "$PAM_PATH" || \
+                    sed -i '1s/^/session  required  pam_turnstile.so\n/' "$PAM_PATH"
+                grep -q "pam_elogind" "$PAM_PATH" || \
                     echo "session required pam_elogind.so" >> "$PAM_PATH"
-                fi
             done
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
@@ -689,7 +699,7 @@ if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
 elif [ -f /mnt/etc/dinit.d/rtkit ]; then
     SVCS="$SVCS rtkit"
 fi
-echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower"
+echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled"
 [ -n "$DM" ] && SVCS="$SVCS $DM"
 
 for svc in $SVCS; do
