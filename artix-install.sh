@@ -636,7 +636,26 @@ for DE in $DE_CHOICES; do
 vt = 1
 
 [default_session]
-command = "cosmic-session"
+command = "env RUST_LOG=warn SYSTEMD_LOG_TARGET=console cosmic-session"
+user = "cosmic-greeter"
+EOF
+            # Wrapper to suppress journald dependency entirely
+            cat > /mnt/usr/local/bin/start-cosmic << 'EOF'
+#!/bin/bash
+export RUST_LOG=warn
+export SYSTEMD_LOG_TARGET=console
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=COSMIC
+exec /usr/bin/cosmic-session
+EOF
+            chmod +x /mnt/usr/local/bin/start-cosmic
+            # Update greetd to use wrapper
+            cat > /mnt/etc/greetd/config.toml << 'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "/usr/local/bin/start-cosmic"
 user = "cosmic-greeter"
 EOF
             ;;
