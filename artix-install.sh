@@ -617,7 +617,7 @@ for DE in $DE_CHOICES; do
 
     artix-chroot /mnt pacman -S --noconfirm \
         cosmic-session cosmic-greeter greetd greetd-dinit \
-        xdg-desktop-portal-cosmic xdg-user-dirs-gtk cosmic-portal \
+        xdg-desktop-portal-cosmic xdg-user-dirs-gtk \
         cosmic-terminal cosmic-files cosmic-text-editor \
         cosmic-player cosmic-store cosmic-screenshot \
         cosmic-settings upower pavucontrol firefox
