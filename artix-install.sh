@@ -424,10 +424,6 @@ done
 # =========================
 # CHROOT CONFIG
 # =========================
-# Write passwords to tightly-permissioned files
-printf '%s' "$ROOTPW" > /mnt/root/root_pw
-printf '%s' "$USERPW"  > /mnt/root/user_pw
-chmod 600 /mnt/root/root_pw /mnt/root/user_pw
 
 # Locale and timezone
 artix-chroot /mnt bash -c "echo '$LOCALE UTF-8' >> /etc/locale.gen && locale-gen"
@@ -449,10 +445,12 @@ KBEOF
 echo "$HOSTNAME" > /mnt/etc/hostname
 
 # Passwords — read directly from files inside chroot, no encoding needed
-artix-chroot /mnt bash -c "echo 'root:'\"$(cat /mnt/root/root_pw)\" | chpasswd"
+# Passwords — pass directly as env vars, no files, no subshells
+ROOTPW_B64=$(printf '%s' "$ROOTPW" | base64)
+USERPW_B64=$(printf '%s' "$USERPW" | base64)
+artix-chroot /mnt bash -c "echo root:\$(echo $ROOTPW_B64 | base64 -d) | chpasswd"
 artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
-artix-chroot /mnt bash -c "echo '$USERNAME:'\"$(cat /mnt/root/user_pw)\" | chpasswd"
-rm /mnt/root/root_pw /mnt/root/user_pw
+artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chpasswd"
 
 # doas
 echo "permit persist :wheel" > /mnt/etc/doas.conf
