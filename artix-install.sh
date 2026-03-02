@@ -300,15 +300,27 @@ fi
 # =========================
 # CPU / GPU DETECTION
 # =========================
-grep -qi intel /proc/cpuinfo && UCODE="intel-ucode" || true
-grep -qi amd   /proc/cpuinfo && UCODE="amd-ucode"   || true
+# CPU microcode — exclusive detection
+if grep -qi "intel" /proc/cpuinfo; then
+    UCODE="intel-ucode"
+elif grep -qi "amd" /proc/cpuinfo; then
+    UCODE="amd-ucode"
+else
+    UCODE=""
+fi
 
 if lspci | grep -qi nvidia; then
     GPU="nvidia nvidia-utils"
 elif lspci | grep -qiE "amd|radeon|advanced micro" || grep -qi amd /proc/cpuinfo; then
-    GPU="mesa xf86-video-amdgpu vulkan-radeon"
+    GPU="mesa vulkan-radeon"
 else
     GPU="mesa"
+fi
+
+# Only install xorg if a DE/WM that needs it was selected
+XORG_PKGS=""
+if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
+    XORG_PKGS="xorg-server xorg-xinit"
 fi
 
 # =========================
@@ -339,10 +351,9 @@ basestrap /mnt \
     base "$FIRST_KERNEL" linux-firmware $UCODE \
     dinit elogind-dinit dbus-dinit \
     networkmanager networkmanager-dinit \
-    doas rtkit haveged haveged-dinit \
-    xorg-server xorg-xinit xdg-user-dirs \
-    dosfstools \
-    pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils \
+    doas rtkit \
+    $XORG_PKGS xdg-user-dirs \
+    pipewire pipewire-pulse pipewire-alsa wireplumber \
     $GPU
 
 fstabgen -U /mnt >> /mnt/etc/fstab
@@ -683,7 +694,7 @@ cat > /mnt/etc/cpupower.conf << 'EOF'
 governor='schedutil'
 EOF
 
-SVCS="dbus NetworkManager elogind haveged cpupower"
+SVCS="dbus NetworkManager elogind cpupower"
 if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
     SVCS="$SVCS rtkit-daemon"
 elif [ -f /mnt/etc/dinit.d/rtkit ]; then
