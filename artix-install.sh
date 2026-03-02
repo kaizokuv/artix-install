@@ -226,10 +226,10 @@ fi
 # KERNEL
 # =========================
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select kernel(s)" 20 70 5 \
-    "linux"         "Standard"                                        ON  \
+    "Select kernel(s)" 30 80 10 \
+    "linux"         "Standard"                                        OFF  \
     "linux-lts"     "LTS — long term support"                         OFF \
-    "linux-zen"     "Zen — desktop optimised"                         OFF \
+    "linux-zen"     "Zen — desktop optimised"                         ON \
     "linux-lqx"     "Liquorix — low latency + MuQSS scheduler"        OFF \
     "linux-cachyos" "CachyOS — BORE scheduler + perf (adds CachyOS repo)" OFF \
     3>&1 1>&2 2>&3) || exit 1
