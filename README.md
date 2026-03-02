@@ -1,7 +1,7 @@
 # artix-install
 
 A simple TUI installer for Artix Linux with dinit(Currently supports dinit. Other init systems may be added in the future.) that gives you a minimal,
-bloat-free system without sacrificing convenience.
+(mostly) bloat-free system without sacrificing convenience.
 
 I've always had to choose between manually installing Artix to avoid the
 bloat that comes with Calamares, or giving in to that convenience. This
@@ -9,8 +9,9 @@ script solves that dilemma.
 
 ## What it configures
 - Disk partitioning and filesystem (ext4, btrfs, xfs, f2fs)
+- Kernel ( zen, lts, standard and custom kernels like cachyos and liquorix kernel)
 - Bootloader (GRUB, Limine, rEFInd)
-- Swap (zram, swapfile, or both)
+- Swap (zram, swapfile, both or neither)
 - CPU microcode and GPU drivers (auto-detected)
 - Keyboard layout, locale, timezone
 - Audio via PipeWire (note: KDE Plasma audio can be finicky)
