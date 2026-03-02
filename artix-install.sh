@@ -625,24 +625,26 @@ for DE in $DE_CHOICES; do
                 chown -R $USERNAME:$USERNAME /home/$USERNAME/.config/
             "
             ;;
-        WindowMaker)
-            # windowmaker is in Arch's extra repo — enable it temporarily
-            artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
-            grep -q '\[extra\]' /mnt/etc/pacman.conf || \
-                printf '\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' >> /mnt/etc/pacman.conf
-            artix-chroot /mnt pacman -Sy --noconfirm
-            artix-chroot /mnt pacman -S --noconfirm windowmaker pavucontrol
-            # Create xsession file if package didn't install one
-            mkdir -p /mnt/usr/share/xsessions
-            cat > /mnt/usr/share/xsessions/windowmaker.desktop << 'EOF'
+            WindowMaker)
+    artix-chroot /mnt pacman -S --noconfirm \
+        windowmaker \
+        wmakerconf \
+        menu \
+        pavucontrol
+
+    mkdir -p /mnt/usr/share/xsessions
+    cat > /mnt/usr/share/xsessions/windowmaker.desktop << 'EOF'
 [Desktop Entry]
-Name=WindowMaker
-Comment=Window Maker desktop environment
-Exec=/usr/bin/wmaker
-TryExec=/usr/bin/wmaker
+Name=Window Maker
+Comment=Window Maker
+Exec=wmaker
+TryExec=wmaker
 Type=Application
 EOF
-            ;;
+
+    artix-chroot /mnt bash -c "echo 'exec wmaker' > /home/$USERNAME/.xinitrc"
+    artix-chroot /mnt chown $USERNAME:$USERNAME /home/$USERNAME/.xinitrc
+;;
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
             ;;
