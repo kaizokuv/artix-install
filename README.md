@@ -25,8 +25,7 @@ A simple TUI installer for Artix Linux with dinit(Currently supports dinit. Othe
 - Audio via PipeWire (note: KDE Plasma audio can be finicky)
 - doas instead of sudo
 - WiFi (carries your live session connection into the install)
-- Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): KDE Plasma, XFCE, LXQt, i3, XMonad, Moksha,
-  Icewm, Fluxbox, Hyprland, COSMIC(experimental), or CLI-only
+- Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha ///the following wms dont configure audio to reduce bloat: i3, XMonad, ,Icewm, Fluxbox or CLI-only
 
 ## Usage
 Boot the Artix live ISO, connect to wifi via nmtui, then run the following command as root
