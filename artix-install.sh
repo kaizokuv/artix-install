@@ -287,6 +287,30 @@ BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
     "refind" "rEFInd (graphical)" \
     3>&1 1>&2 2>&3) || exit 1
 
+
+# =========================
+# XLIBRE / XORG
+# =========================
+USE_XLIBRE=0
+if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+    if whiptail --title "$TITLE" --yesno \
+        "Use XLibre instead of Xorg?\n\nXLibre is Artix's actively maintained Xorg fork.\nFeatures: TearFree by default, cleaner codebase.\nInstalled from the galaxy-gremlins repo.\n\nRecommended for bare WMs. Choose No for standard Xorg." \
+        14 60; then
+        USE_XLIBRE=1
+    fi
+fi
+
+# =========================
+# NETWORK STACK
+# =========================
+NET_CHOICE=$(whiptail --title "$TITLE" --menu \
+    "Network Stack\n\nNetworkManager is heavy (~30MB).\nLighter options save significant RAM at idle." \
+    15 65 3 \
+    "dhcpcd" "dhcpcd  -- ethernet only, ~2MB" \
+    "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
+    "NM"     "NetworkManager -- full featured, ~30MB" \
+    3>&1 1>&2 2>&3) || NET_CHOICE="NM"
+
 # =========================
 # PARTITION
 # =========================
@@ -386,15 +410,10 @@ if [ "$BARE_WM_ONLY" = "1" ]; then
     GPU=""
 fi
 
-# Only install xorg if a DE/WM that needs it was selected
+# XORG_PKGS determined by USE_XLIBRE chosen upfront
 XORG_PKGS=""
-USE_XLIBRE=0
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    if whiptail --title "$TITLE" --yesno \
-        "Use XLibre instead of Xorg?\n\nXLibre is Artix's actively maintained Xorg fork.\nFeatures: TearFree by default, cleaner codebase.\nInstalled from galaxy-gremlins repo.\n\nRecommended for bare WMs. Choose No for Xorg." \
-        14 60; then
-        USE_XLIBRE=1
-        # xlibre-xserver conflicts with xorg-server — replaces it automatically
+    if [ "$USE_XLIBRE" = "1" ]; then
         XORG_PKGS="xlibre-xserver xlibre-xserver-common xorg-xinit"
     else
         XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
@@ -951,15 +970,7 @@ cat > /mnt/etc/cpupower.conf << 'EOF'
 governor='schedutil'
 EOF
 
-# Networking choice — NM is convenient but heavy (~30MB)
-NET_CHOICE=$(whiptail --title "$TITLE" --menu \
-    "Network Stack\\n\\nNetworkManager is heavy (~30MB).\\nLighter options save significant RAM." \
-    15 65 3 \
-    "dhcpcd" "dhcpcd  -- ethernet only, ~2MB" \
-    "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
-    "NM"     "NetworkManager -- full featured, ~30MB" \
-    3>&1 1>&2 2>&3) || NET_CHOICE="NM"
-
+# Install chosen network stack + migrate NM wifi profiles if needed
 case "$NET_CHOICE" in
     dhcpcd)
         artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-dinit
@@ -968,30 +979,48 @@ case "$NET_CHOICE" in
     iwd)
         artix-chroot /mnt pacman -S --noconfirm iwd iwd-dinit
         NET_SVC="iwd"
+        # Migrate NetworkManager wifi profiles -> iwd
+        if [ -d /etc/NetworkManager/system-connections ]; then
+            mkdir -p /mnt/var/lib/iwd
+            for nmconf in /etc/NetworkManager/system-connections/*.nmconnection; do
+                [ -f "$nmconf" ] || continue
+                SSID=$(awk -F= '/^ssid=/{print $2}' "$nmconf")
+                PSK=$(awk -F= '/^psk=/{print $2}' "$nmconf")
+                [ -z "$SSID" ] && continue
+                IWDFILE="/mnt/var/lib/iwd/${SSID}.psk"
+                if [ -n "$PSK" ]; then
+                    printf '[Security]\nPassphrase=%s\n' "$PSK" > "$IWDFILE"
+                else
+                    printf '[Security]\n' > "$IWDFILE"
+                fi
+                chmod 600 "$IWDFILE"
+                echo "Migrated wifi: $SSID"
+            done
+        fi
         ;;
     NM)
         NET_SVC="NetworkManager"
         ;;
 esac
 
-SVCS="dbus \$NET_SVC elogind cpupower"
+SVCS="dbus $NET_SVC elogind cpupower"
 if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
-    SVCS="\$SVCS rtkit-daemon"
+    SVCS="$SVCS rtkit-daemon"
 elif [ -f /mnt/etc/dinit.d/rtkit ]; then
-    SVCS="\$SVCS rtkit"
+    SVCS="$SVCS rtkit"
 fi
-echo "\$DE_CHOICES" | grep -qw "Cosmic" && SVCS="\$SVCS upower turnstiled"
-[ -n "\$DM" ] && SVCS="\$SVCS \$DM"
+echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled"
+[ -n "$DM" ] && SVCS="$SVCS $DM"
 
-for svc in \$SVCS; do
-    if [ -f "/mnt/etc/dinit.d/\$svc" ]; then
-        artix-chroot /mnt ln -sf /etc/dinit.d/\$svc /etc/dinit.d/boot.d/
+for svc in $SVCS; do
+    if [ -f "/mnt/etc/dinit.d/$svc" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
     else
-        echo "Warning: dinit service \$svc not found, skipping."
+        echo "Warning: dinit service '$svc' not found, skipping."
     fi
 done
 
-if [[ "\$SWAP" =~ Zram|Both ]]; then
+if [[ "$SWAP" =~ Zram|Both ]]; then
     [ -f "/mnt/etc/dinit.d/zram" ] && \
         artix-chroot /mnt ln -sf /etc/dinit.d/zram /etc/dinit.d/boot.d/
 fi
