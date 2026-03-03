@@ -73,13 +73,6 @@ DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
     "${disklist[@]}" 3>&1 1>&2 2>&3) || exit 1
 
 # =========================
-# PARTITION MODE
-# =========================
-PART_MODE=$(whiptail --title "$TITLE" --menu "Partitioning Mode" 12 65 2 \
-    "auto"   "Automatic -- wipe disk and partition for me" \
-    "manual" "Manual    -- I will partition with cfdisk" \
-    3>&1 1>&2 2>&3) || exit 1
-
 
 # =========================
 # FILESYSTEM
@@ -300,47 +293,164 @@ BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
 # =========================
 # PARTITION
 # =========================
-if [ "$PART_MODE" = "auto" ]; then
+# =========================
+# =========================
+# TUI PARTITION MANAGER
+# =========================
+PART_DEVS=()
+PART_SIZES=()
+PART_TYPES=()
+DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
+DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
+EFI=""
+ROOT=""
+DUALBOOT=0
+
+tui_partition_manager() {
+    while true; do
+        TABLE=""
+        for i in "${!PART_DEVS[@]}"; do
+            TABLE+="${PART_DEVS[$i]}|${PART_SIZES[$i]}GB|${PART_TYPES[$i]}  "
+        done
+        [ -z "$TABLE" ] && TABLE="(no partitions defined yet)"
+
+        ACTION=$(whiptail --title "$TITLE" --menu \
+            "Partition Manager — $DISK (${DISK_SIZE_GB}GB)\n\nLayout: $TABLE" \
+            19 72 6 \
+            "auto"     "Auto layout       — 1GB EFI + rest as root (wipes disk)" \
+            "dualboot" "Dual-boot         — use existing partitions, pick root + EFI" \
+            "add"      "Add partition      — define a new partition" \
+            "delete"   "Delete last        — remove last added partition" \
+            "clear"    "Clear all          — start layout over" \
+            "done"     "Write and continue — apply layout to disk" \
+            3>&1 1>&2 2>&3) || exit 1
+
+        case "$ACTION" in
+            auto)
+                PART_DEVS=()
+                PART_SIZES=()
+                PART_TYPES=()
+                DUALBOOT=0
+                [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+                PART_SIZES=( "1" "$(( DISK_SIZE_GB - 1 ))" )
+                PART_TYPES=( "EFI" "root" )
+                ;;
+            dualboot)
+                DUALBOOT=1
+                PART_DEVS=()
+                PART_SIZES=()
+                PART_TYPES=()
+                # Show all partitions on all disks for EFI selection
+                mapfile -t allparts < <(lsblk -pno NAME,SIZE,FSTYPE,PARTTYPE | \
+                    grep -v '^/dev/[a-z]*[[:space:]]' | \
+                    awk '{print $1; printf "%s %s %s\n", $2, ($3=="" ? "unformatted" : $3), ($4=="" ? "" : "[EFI]")}')
+                EFI=$(whiptail --title "$TITLE" --menu \
+                    "Dual-boot: Select existing EFI partition\n(This is your Windows/existing ESP — do NOT format it)" \
+                    18 72 10 "${allparts[@]}" 3>&1 1>&2 2>&3) || continue
+                # Show free/unformatted partitions for root
+                mapfile -t rootparts < <(lsblk -pno NAME,SIZE,FSTYPE "$DISK" | \
+                    grep -v "^$DISK " | \
+                    awk '{print $1; printf "%s %s\n", $2, ($3=="" ? "unformatted" : $3)}')
+                ROOT=$(whiptail --title "$TITLE" --menu \
+                    "Dual-boot: Select partition for Artix root\n(This will be formatted as $FS)" \
+                    18 72 10 "${rootparts[@]}" 3>&1 1>&2 2>&3) || continue
+                whiptail --title "$TITLE" --msgbox \
+                    "Dual-boot configured:\n\n  EFI  : $EFI  (will NOT be formatted)\n  Root : $ROOT (will be formatted as $FS)\n\nArtix bootloader entry will be added to the existing ESP.\nos-prober will detect your other OS automatically." \
+                    14 65
+                break
+                ;;
+            add)
+                PSIZE=$(whiptail --title "$TITLE" --inputbox \
+                    "Partition size in GB\n(0 = fill remaining space on disk)" \
+                    10 55 "" 3>&1 1>&2 2>&3) || continue
+                PTYPE=$(whiptail --title "$TITLE" --menu "Partition type" 12 45 4 \
+                    "EFI"  "EFI System Partition (boot)" \
+                    "root" "Root filesystem" \
+                    "swap" "Swap partition" \
+                    "data" "Extra data partition" \
+                    3>&1 1>&2 2>&3) || continue
+                PIDX=$(( ${#PART_DEVS[@]} + 1 ))
+                [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
+                PART_DEVS+=( "${DISK}${P}${PIDX}" )
+                PART_SIZES+=( "$PSIZE" )
+                PART_TYPES+=( "$PTYPE" )
+                ;;
+            delete)
+                if [ ${#PART_DEVS[@]} -gt 0 ]; then
+                    unset 'PART_DEVS[-1]'
+                    unset 'PART_SIZES[-1]'
+                    unset 'PART_TYPES[-1]'
+                fi
+                ;;
+            clear)
+                PART_DEVS=()
+                PART_SIZES=()
+                PART_TYPES=()
+                DUALBOOT=0
+                ;;
+            done)
+                [ "$DUALBOOT" = "1" ] && break
+                EFI_COUNT=0; ROOT_COUNT=0
+                for t in "${PART_TYPES[@]}"; do
+                    [ "$t" = "EFI" ]  && EFI_COUNT=$(( EFI_COUNT + 1 ))
+                    [ "$t" = "root" ] && ROOT_COUNT=$(( ROOT_COUNT + 1 ))
+                done
+                if [ "$EFI_COUNT" -ne 1 ] || [ "$ROOT_COUNT" -ne 1 ]; then
+                    whiptail --title "$TITLE" --msgbox \
+                        "Invalid layout.\n\nYou need exactly one EFI partition and one root partition.\nCurrent: ${EFI_COUNT}x EFI, ${ROOT_COUNT}x root." \
+                        10 55
+                    continue
+                fi
+                for i in "${!PART_TYPES[@]}"; do
+                    [ "${PART_TYPES[$i]}" = "EFI" ]  && EFI="${PART_DEVS[$i]}"
+                    [ "${PART_TYPES[$i]}" = "root" ] && ROOT="${PART_DEVS[$i]}"
+                done
+                break
+                ;;
+        esac
+    done
+}
+
+tui_partition_manager
+
+if [ "$DUALBOOT" = "0" ]; then
+    # Fresh install — wipe and write new partition table
     wipefs -af "$DISK"
-    fdisk "$DISK" << FDEOF
-g
-n
-1
-
-+1G
-t
-1
-1
-n
-2
-
-
-w
-FDEOF
+    (
+        echo g
+        SECTOR=2048
+        for i in "${!PART_DEVS[@]}"; do
+            PIDX=$(( i + 1 ))
+            SZ="${PART_SIZES[$i]}"
+            TYPE="${PART_TYPES[$i]}"
+            echo n; echo "$PIDX"; echo "$SECTOR"
+            [ "$SZ" = "0" ] && echo "" || echo "+${SZ}G"
+            echo t; echo "$PIDX"
+            case "$TYPE" in
+                EFI)  echo 1  ;;
+                swap) echo 19 ;;
+                *)    echo 20 ;;
+            esac
+            SECTOR=$(( SECTOR + SZ * 1024 * 1024 * 1024 / 512 ))
+        done
+        echo w
+    ) | fdisk "$DISK"
     udevadm settle
-    [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
-    EFI="${DISK}${P}1"
-    ROOT="${DISK}${P}2"
     mkfs.fat -F32 "$EFI"
+    # Format swap if defined
+    for i in "${!PART_TYPES[@]}"; do
+        if [ "${PART_TYPES[$i]}" = "swap" ]; then
+            mkswap "${PART_DEVS[$i]}"
+            swapon "${PART_DEVS[$i]}"
+        fi
+    done
 else
-    clear
-    echo ""
-    echo "  Opening cfdisk on $DISK -- create EFI System + root partitions, then Write + Quit."
-    echo ""
-    read -rp "  Press Enter to open cfdisk..."
-    cfdisk "$DISK"
+    # Dual-boot — never touch EFI, only format root
     udevadm settle
-    mapfile -t partlist < <(lsblk -pno NAME,SIZE "$DISK" | grep -v "^$DISK " | awk '{print $1; print $2}')
-    EFI=$(whiptail --title "$TITLE" --menu "Select EFI partition" 15 65 8 "${partlist[@]}" 3>&1 1>&2 2>&3) || exit 1
-    ROOT=$(whiptail --title "$TITLE" --menu "Select Root partition" 15 65 8 "${partlist[@]}" 3>&1 1>&2 2>&3) || exit 1
-    CURRENT_EFI_FS=$(lsblk -no FSTYPE "$EFI" 2>/dev/null)
-    if [ "$CURRENT_EFI_FS" = "vfat" ]; then
-        whiptail --title "$TITLE" --yesno "$EFI already has FAT32.\n\nFormat it? (Choose No for dual-boot)" 10 65 \
-            && mkfs.fat -F32 "$EFI" || true
-    else
-        mkfs.fat -F32 "$EFI"
-    fi
 fi
+
+
 
 if [ "$ENCRYPT" = "1" ]; then
     command -v cryptsetup &>/dev/null || pacman -Sy --noconfirm cryptsetup
@@ -1033,10 +1143,22 @@ done
 case "$BOOT" in
     grub)
         artix-chroot /mnt pacman -S --noconfirm grub efibootmgr
+        if [ "$DUALBOOT" = "1" ]; then
+            # os-prober detects other OSes (Windows etc) for GRUB menu
+            artix-chroot /mnt pacman -S --noconfirm os-prober
+            sed -i 's/^#GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' /mnt/etc/default/grub
+            grep -q 'GRUB_DISABLE_OS_PROBER' /mnt/etc/default/grub || \
+                echo 'GRUB_DISABLE_OS_PROBER=false' >> /mnt/etc/default/grub
+            # Mount other partitions so os-prober can find them
+            mount --bind /dev  /mnt/dev
+            mount --bind /proc /mnt/proc
+            mount --bind /sys  /mnt/sys
+        fi
         artix-chroot /mnt grub-install \
             --target=x86_64-efi \
             --efi-directory=/boot \
-            --bootloader-id=Artix
+            --bootloader-id=Artix \
+            --recheck
         if [ "$ENCRYPT" = "1" ]; then
             GRUB_LUKS="cryptdevice=UUID=$(blkid -s UUID -o value "$REAL_ROOT"):cryptroot root=/dev/mapper/cryptroot"
             sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$GRUB_LUKS\"|" /mnt/etc/default/grub
