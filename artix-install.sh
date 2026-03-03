@@ -22,7 +22,7 @@ TITLE="Artix Master Installer"
 whiptail --title "$TITLE" --msgbox "Welcome to the Artix Linux Installer
 
 This script will guide you through a minimal, bloat-free
-installation of Artix Linux with dinit.
+installation of Artix Linux 
 
 You will be asked to configure:
   - Disk, filesystem and swap
@@ -66,13 +66,19 @@ pick() {
 }
 
 # =========================
+# =========================
+# INIT SYSTEM
+# =========================
+INIT=$(whiptail --title "$TITLE" --menu "Init System" 12 60 2 \
+    "dinit"  "dinit  -- fast, dependency-based (recommended)" \
+    "openrc" "openrc -- traditional, widely supported" \
+    3>&1 1>&2 2>&3) || exit 1
+
 # DISK
 # =========================
 mapfile -t disklist < <(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1; print $2}')
 DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
     "${disklist[@]}" 3>&1 1>&2 2>&3) || exit 1
-
-# =========================
 
 # =========================
 # FILESYSTEM
@@ -220,10 +226,8 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
         DE_CHOICES="CLI"
     fi
 
-    # Ask extras immediately after DE selection while context is fresh
-    PLASMA_EXTRAS=0
-    XFCE_EXTRAS=0
-    I3_EXTRAS=0
+    PLASMA_EXTRAS=0; XFCE_EXTRAS=0; I3_EXTRAS=0
+    OPENBOX_EXTRAS=0; FLUXBOX_EXTRAS=0; ICEWM_EXTRAS=0; HYPRLAND_EXTRAS=0
     if echo "$DE_CHOICES" | grep -qw "Plasma"; then
         whiptail --title "$TITLE" --yesno \
             "Install KDE apps?\n\ndolphin  — file manager\nkonsole  — terminal\nkate     — text editor\nark      — archive manager\nokular   — document viewer\ngwenview — image viewer\nkcalc    — calculator\nfirefox  — web browser\nfastfetch — system info" \
@@ -239,10 +243,6 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
             "Install i3 extras?\n\ndmenu     — application launcher\nxterm     — basic terminal\nfirefox   — web browser\nfastfetch — system info" \
             13 50 && I3_EXTRAS=1 || true
     fi
-    OPENBOX_EXTRAS=0
-    FLUXBOX_EXTRAS=0
-    ICEWM_EXTRAS=0
-    HYPRLAND_EXTRAS=0
     if echo "$DE_CHOICES" | grep -qw "Openbox"; then
         whiptail --title "$TITLE" --yesno \
             "Install Openbox extras?\n\ntint2     — taskbar/panel\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
@@ -284,10 +284,33 @@ FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
 # BOOTLOADER
 # =========================
 BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
-    "grub"   "GRUB2 (most compatible)" \
+    "grub"   "GRUB2 (most compatible, required for dual-boot)" \
     "limine" "Limine (fast, minimal)" \
     "refind" "rEFInd (graphical)" \
     3>&1 1>&2 2>&3) || exit 1
+
+# =========================
+# XLIBRE / XORG
+# =========================
+USE_XLIBRE=0
+if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+    if whiptail --title "$TITLE" --yesno \
+        "Use XLibre instead of Xorg?\n\nXLibre is Artix's actively maintained Xorg fork.\nFeatures: TearFree by default, cleaner codebase.\nInstalled from the galaxy-gremlins repo.\n\nRecommended for bare WMs. Choose No for standard Xorg." \
+        14 60; then
+        USE_XLIBRE=1
+    fi
+fi
+
+# =========================
+# NETWORK STACK
+# =========================
+NET_CHOICE=$(whiptail --title "$TITLE" --menu \
+    "Network Stack\n\nNetworkManager is heavy (~30MB).\nLighter options save significant RAM at idle." \
+    15 65 3 \
+    "dhcpcd" "dhcpcd  -- ethernet only, ~2MB" \
+    "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
+    "NM"     "NetworkManager -- full featured, ~30MB" \
+    3>&1 1>&2 2>&3) || NET_CHOICE="NM"
 
 
 # =========================
@@ -418,36 +441,39 @@ if [ "$DUALBOOT" = "0" ]; then
     # Fresh install — wipe and write new partition table
     wipefs -af "$DISK"
     (
-        echo g
-        SECTOR=2048
+        echo g  # new GPT table
         for i in "${!PART_DEVS[@]}"; do
             PIDX=$(( i + 1 ))
             SZ="${PART_SIZES[$i]}"
             TYPE="${PART_TYPES[$i]}"
-            echo n; echo "$PIDX"; echo "$SECTOR"
+            echo n        # new partition
+            echo "$PIDX"  # partition number
+            echo ""        # default start (fdisk auto-aligns)
             [ "$SZ" = "0" ] && echo "" || echo "+${SZ}G"
-            echo t; echo "$PIDX"
+            echo t        # set type
+            [ "$PIDX" -gt 1 ] && echo "$PIDX"  # partition number (not needed for first)
             case "$TYPE" in
-                EFI)  echo 1  ;;
-                swap) echo 19 ;;
-                *)    echo 20 ;;
+                EFI)  echo 1  ;;   # EFI System
+                swap) echo 19 ;;   # Linux swap
+                *)    echo 20 ;;   # Linux filesystem
             esac
-            SECTOR=$(( SECTOR + SZ * 1024 * 1024 * 1024 / 512 ))
         done
         echo w
     ) | fdisk "$DISK"
     udevadm settle
     mkfs.fat -F32 "$EFI"
-    # Format swap if defined
+    # Format swap partition now — activate after mount so fstabgen sees it
+    SWAP_PART=""
     for i in "${!PART_TYPES[@]}"; do
         if [ "${PART_TYPES[$i]}" = "swap" ]; then
-            mkswap "${PART_DEVS[$i]}"
-            swapon "${PART_DEVS[$i]}"
+            SWAP_PART="${PART_DEVS[$i]}"
+            mkswap "$SWAP_PART"
         fi
     done
 else
     # Dual-boot — never touch EFI, only format root
     udevadm settle
+    SWAP_PART=""
 fi
 
 
@@ -470,6 +496,28 @@ esac
 mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
+
+# Activate swap partition now so fstabgen picks it up
+[ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
+
+# =========================
+# PROGRESS GAUGE
+# =========================
+GAUGE_PIPE=$(mktemp -u /tmp/gauge_XXXXXX)
+mkfifo "$GAUGE_PIPE"
+whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 < "$GAUGE_PIPE" &
+GAUGE_PID=$!
+exec 3>"$GAUGE_PIPE"
+
+gauge() {
+    local pct="$1" msg="$2"
+    echo "$pct" >&3
+    echo "XXX" >&3
+    echo "$msg" >&3
+    echo "XXX" >&3
+}
+
+gauge 2 "Partitioning disk..."
 
 # =========================
 # SWAPFILE
@@ -521,15 +569,10 @@ if [ "$BARE_WM_ONLY" = "1" ]; then
     GPU=""
 fi
 
-# Only install xorg if a DE/WM that needs it was selected
+# XORG_PKGS set from USE_XLIBRE chosen upfront
 XORG_PKGS=""
-USE_XLIBRE=0
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    if whiptail --title "$TITLE" --yesno \
-        "Use XLibre instead of Xorg?\n\nXLibre is Artix's actively maintained Xorg fork.\nFeatures: TearFree by default, cleaner codebase.\nInstalled from galaxy-gremlins repo.\n\nRecommended for bare WMs. Choose No for Xorg." \
-        14 60; then
-        USE_XLIBRE=1
-        # xlibre-xserver conflicts with xorg-server — replaces it automatically
+    if [ "$USE_XLIBRE" = "1" ]; then
         XORG_PKGS="xlibre-xserver xlibre-xserver-common xorg-xinit"
     else
         XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
@@ -547,6 +590,7 @@ for _de in $AUDIO_DES; do
 done
 
 # =========================
+gauge 15 "Configuring repositories..."
 # XLIBRE REPO (if needed)
 # =========================
 if [ "$USE_XLIBRE" = "1" ]; then
@@ -587,18 +631,20 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     fi
 fi
 
+gauge 20 "Installing base system (this takes a while)..."
 # =========================
 # BASESTRAP
 # =========================
 basestrap /mnt \
     base "$FIRST_KERNEL" linux-firmware $UCODE \
-    dinit elogind-dinit dbus-dinit \
-    networkmanager networkmanager-dinit \
+    $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
+    $([ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc") \
     doas rtkit \
     $XORG_PKGS xdg-user-dirs \
     $AUDIO_PKGS \
     $GPU
 
+gauge 35 "Writing fstab..."
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # Persist XLibre repo and finish input driver install
@@ -687,8 +733,10 @@ done
 # =========================
 
 # Locale and timezone
+gauge 40 "Setting locale..."
 artix-chroot /mnt bash -c "echo '$LOCALE UTF-8' >> /etc/locale.gen && locale-gen"
 artix-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
+gauge 45 "Setting timezone..."
 artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime && hwclock --systohc"
 
 # Keyboard
@@ -703,6 +751,7 @@ EndSection
 KBEOF
 
 # Hostname
+gauge 50 "Configuring hostname..."
 echo "$HOSTNAME" > /mnt/etc/hostname
 
 # Passwords — read directly from files inside chroot, no encoding needed
@@ -710,6 +759,7 @@ echo "$HOSTNAME" > /mnt/etc/hostname
 ROOTPW_B64=$(printf '%s' "$ROOTPW" | base64)
 USERPW_B64=$(printf '%s' "$USERPW" | base64)
 artix-chroot /mnt bash -c "echo root:\$(echo $ROOTPW_B64 | base64 -d) | chpasswd"
+gauge 55 "Creating user account..."
 artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
 artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chpasswd"
 
@@ -796,16 +846,24 @@ for _wm in $BARE_WMS; do
 EOF
         chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
         # Override agetty-tty1 to autologin
-        cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
+        if [ "$INIT" = "dinit" ]; then
+            cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
 type = process
 command = /sbin/agetty --autologin $USERNAME --noclear tty1 38400 linux
 restart = true
 depends-on = elogind
 EOF
+        else
+            mkdir -p /mnt/etc/conf.d
+            cat > /mnt/etc/conf.d/agetty.tty1 << EOF
+agetty_options="--autologin $USERNAME --noclear"
+EOF
+        fi
         break
     fi
 done
 
+gauge 60 "Configuring swap..."
 # =========================
 # ZRAM
 # =========================
@@ -838,6 +896,7 @@ stop-command = /usr/local/bin/zram-teardown
 EOF
 fi
 
+gauge 65 "Installing desktop environment..."
 # =========================
 # DESKTOP INSTALL
 # =========================
@@ -1010,7 +1069,7 @@ EOF
             "
             artix-chroot /mnt pacman -S --noconfirm \
                 cosmic-session cosmic-comp cosmic-greeter \
-                greetd greetd-dinit \
+                $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc") \
                 xdg-desktop-portal-cosmic xdg-user-dirs-gtk \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
@@ -1052,7 +1111,7 @@ if [ -n "$DM" ]; then
     if [[ "$DM" == "greetd" ]]; then
         if ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
             # greetd for Hyprland
-            artix-chroot /mnt pacman -S --noconfirm greetd greetd-dinit
+            artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc")
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << EOF
 [terminal]
@@ -1065,9 +1124,9 @@ EOF
         fi
         : # COSMIC installs its own greetd in the Cosmic case block
     elif [[ "$DM" == "sddm" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
+        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "sddm sddm-dinit" || echo "sddm sddm-openrc")
     elif [[ "$DM" == "lightdm" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
+        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "lightdm lightdm-dinit lightdm-gtk-greeter" || echo "lightdm lightdm-openrc lightdm-gtk-greeter")
     fi
 fi
 
@@ -1075,68 +1134,92 @@ fi
 # kdesu and various DE tools hardcode sudo
 [ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
 
+gauge 85 "Enabling services..."
 # =========================
-# DINIT SERVICES
+# INIT SERVICES
 # =========================
-mkdir -p /mnt/etc/dinit.d/boot.d
 
-# CPU governor — schedutil gives full speed when needed, backs off when idle
-artix-chroot /mnt pacman -S --noconfirm cpupower cpupower-dinit
+# CPU governor
 cat > /mnt/etc/cpupower.conf << 'EOF'
 governor='schedutil'
 EOF
 
-# Networking choice — NM is convenient but heavy (~30MB)
-NET_CHOICE=$(whiptail --title "$TITLE" --menu \
-    "Network Stack\\n\\nNetworkManager is heavy (~30MB).\\nLighter options save significant RAM." \
-    15 65 3 \
-    "dhcpcd" "dhcpcd  -- ethernet only, ~2MB" \
-    "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
-    "NM"     "NetworkManager -- full featured, ~30MB" \
-    3>&1 1>&2 2>&3) || NET_CHOICE="NM"
-
+# Install chosen network stack + migrate NM wifi profiles if needed
 case "$NET_CHOICE" in
     dhcpcd)
-        artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-dinit
+        if [ "$INIT" = "dinit" ]; then
+            artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-dinit
+        else
+            artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-openrc
+        fi
         NET_SVC="dhcpcd"
         ;;
     iwd)
-        artix-chroot /mnt pacman -S --noconfirm iwd iwd-dinit
+        if [ "$INIT" = "dinit" ]; then
+            artix-chroot /mnt pacman -S --noconfirm iwd iwd-dinit
+        else
+            artix-chroot /mnt pacman -S --noconfirm iwd iwd-openrc
+        fi
         NET_SVC="iwd"
+        if [ -d /etc/NetworkManager/system-connections ]; then
+            mkdir -p /mnt/var/lib/iwd
+            for nmconf in /etc/NetworkManager/system-connections/*.nmconnection; do
+                [ -f "$nmconf" ] || continue
+                SSID=$(awk -F= '/^ssid=/{print $2}' "$nmconf")
+                PSK=$(awk -F= '/^psk=/{print $2}' "$nmconf")
+                [ -z "$SSID" ] && continue
+                IWDFILE="/mnt/var/lib/iwd/${SSID}.psk"
+                [ -n "$PSK" ] && printf '[Security]\nPassphrase=%s\n' "$PSK" > "$IWDFILE" \
+                              || printf '[Security]\n' > "$IWDFILE"
+                chmod 600 "$IWDFILE"
+                echo "Migrated wifi: $SSID"
+            done
+        fi
         ;;
     NM)
         NET_SVC="NetworkManager"
         ;;
 esac
 
-SVCS="dbus \$NET_SVC elogind cpupower"
-if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
-    SVCS="\$SVCS rtkit-daemon"
-elif [ -f /mnt/etc/dinit.d/rtkit ]; then
-    SVCS="\$SVCS rtkit"
+if [ "$INIT" = "dinit" ]; then
+    artix-chroot /mnt pacman -S --noconfirm cpupower cpupower-dinit
+    mkdir -p /mnt/etc/dinit.d/boot.d
+    SVCS="dbus $NET_SVC elogind cpupower"
+    [ -f /mnt/etc/dinit.d/rtkit-daemon ] && SVCS="$SVCS rtkit-daemon" \
+        || { [ -f /mnt/etc/dinit.d/rtkit ] && SVCS="$SVCS rtkit"; }
+    echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled"
+    [ -n "$DM" ] && SVCS="$SVCS $DM"
+    for svc in $SVCS; do
+        if [ -f "/mnt/etc/dinit.d/$svc" ]; then
+            artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
+        else
+            echo "Warning: dinit service '$svc' not found, skipping."
+        fi
+    done
+    [[ "$SWAP" =~ Zram|Both ]] && [ -f /mnt/etc/dinit.d/zram ] && \
+        artix-chroot /mnt ln -sf /etc/dinit.d/zram /etc/dinit.d/boot.d/ || true
+    for tty in 2 3 4 5 6; do
+        rm -f /mnt/etc/dinit.d/boot.d/getty@tty${tty} 2>/dev/null || true
+        artix-chroot /mnt dinitctl disable getty@tty${tty} 2>/dev/null || true
+    done
+else
+    # OpenRC
+    artix-chroot /mnt pacman -S --noconfirm cpupower cpupower-openrc
+    SVCS="dbus $NET_SVC elogind cpupower"
+    [ -f /mnt/etc/init.d/rtkit ] && SVCS="$SVCS rtkit"
+    echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower"
+    [ -n "$DM" ] && SVCS="$SVCS $DM"
+    for svc in $SVCS; do
+        artix-chroot /mnt rc-update add "$svc" default 2>/dev/null \
+            || echo "Warning: openrc service '$svc' not found, skipping."
+    done
+    [[ "$SWAP" =~ Zram|Both ]] && artix-chroot /mnt rc-update add zram boot 2>/dev/null || true
+    for tty in 2 3 4 5 6; do
+        artix-chroot /mnt rc-update del agetty.tty${tty} 2>/dev/null || true
+    done
 fi
-echo "\$DE_CHOICES" | grep -qw "Cosmic" && SVCS="\$SVCS upower turnstiled"
-[ -n "\$DM" ] && SVCS="\$SVCS \$DM"
 
-for svc in \$SVCS; do
-    if [ -f "/mnt/etc/dinit.d/\$svc" ]; then
-        artix-chroot /mnt ln -sf /etc/dinit.d/\$svc /etc/dinit.d/boot.d/
-    else
-        echo "Warning: dinit service \$svc not found, skipping."
-    fi
-done
-
-if [[ "\$SWAP" =~ Zram|Both ]]; then
-    [ -f "/mnt/etc/dinit.d/zram" ] && \
-        artix-chroot /mnt ln -sf /etc/dinit.d/zram /etc/dinit.d/boot.d/
-fi
-
-# Only enable tty1 — tty2-6 waste ~15MB sitting idle
-for tty in 2 3 4 5 6; do
-    rm -f /mnt/etc/dinit.d/boot.d/getty@tty\${tty} 2>/dev/null || true
-    artix-chroot /mnt dinitctl disable getty@tty\${tty} 2>/dev/null || true
-done
-
+gauge 90 "Installing bootloader..."
 # =========================
 # BOOTLOADER
 # =========================
@@ -1201,7 +1284,7 @@ EOF
             printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet"\n' \
                 "$LUKS_CMDLINE" > /mnt/boot/refind_linux.conf
         else
-            printf '"Boot with standard options"  "root=UUID=%s rw quiet"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/dinit"\n"Boot with minimal options"   "root=UUID=%s rw"\n' \
+            printf '"Boot with standard options"  "root=UUID=%s rw quiet"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/$INIT"\n"Boot with minimal options"   "root=UUID=%s rw"\n' \
                 "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
         fi
         ;;
@@ -1211,4 +1294,10 @@ esac
 # DONE
 # =========================
 umount -R /mnt
+gauge 100 "Installation complete!"
+sleep 1
+exec 3>&-
+kill "$GAUGE_PID" 2>/dev/null || true
+rm -f "$GAUGE_PIPE"
+
 whiptail --title "$TITLE" --yesno "Install complete! Reboot now?" 10 50 && reboot || true
