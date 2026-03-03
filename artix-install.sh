@@ -604,6 +604,26 @@ fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
+# Bare WMs use startx from TTY1 — no display manager needed
+BARE_WMS="i3 XMonad Openbox Fluxbox IceWM"
+for _wm in $BARE_WMS; do
+    if echo "$DE_CHOICES" | grep -qw "$_wm"; then
+        # .bash_profile launches startx only on TTY1
+        cat >> /mnt/home/"$USERNAME"/.bash_profile << 'EOF'
+[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
+EOF
+        chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
+        # Override agetty-tty1 to autologin
+        cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
+type = process
+command = /sbin/agetty --autologin $USERNAME --noclear tty1 38400 linux
+restart = true
+depends-on = elogind
+EOF
+        break
+    fi
+done
+
 # =========================
 # ZRAM
 # =========================
@@ -645,7 +665,7 @@ elif echo "$DE_CHOICES" | grep -qw "Hyprland"; then
     DM="greetd"
 elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
     DM="sddm"
-elif [ "$DE_CHOICES" != "CLI" ]; then
+elif echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|Moksha"; then
     DM="lightdm"
 else
     DM=""
@@ -813,7 +833,7 @@ EOF
         : # COSMIC installs its own greetd in the Cosmic case block
     elif [[ "$DM" == "sddm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
-    else
+    elif [[ "$DM" == "lightdm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
     fi
 fi
