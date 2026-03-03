@@ -794,12 +794,52 @@ for DE in $DE_CHOICES; do
                 artix-chroot /mnt pacman -S --noconfirm iceconf feh rofi firefox fastfetch
             fi
             mkdir -p /mnt/home/"$USERNAME"/.config/icewm
+            # Minimal Xorg config — prevents zen kernel DRM over-allocation
+            mkdir -p /mnt/etc/X11/xorg.conf.d
+            cat > /mnt/etc/X11/xorg.conf.d/10-icewm-minimal.conf << 'EOF'
+Section "ServerFlags"
+    Option "NoPM"             "true"
+    Option "NoTrapSignals"    "false"
+    Option "BlankTime"        "0"
+    Option "StandbyTime"      "0"
+    Option "SuspendTime"      "0"
+    Option "OffTime"          "0"
+EndSection
+
+Section "Device"
+    Identifier "GPU"
+    Driver     "modesetting"
+    Option     "AccelMethod"    "glamor"
+    Option     "DRI"            "3"
+    Option     "TearFree"       "true"
+    Option     "PageFlip"       "true"
+EndSection
+
+Section "Screen"
+    Identifier "Screen0"
+    Device     "GPU"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1920x1080"
+    EndSubSection
+EndSection
+EOF
             cat > /mnt/home/"$USERNAME"/.xinitrc << 'EOF'
 #!/bin/sh
-# Load fonts into X session
+# Kill any stale X locks
+rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
+
+# Disable screen blanking and power management
+xset s off
+xset -dpms
+xset s noblank
+
+# Font paths
 xset fp+ /usr/share/fonts/TTF
 xset fp+ /usr/share/fonts/dejavu
 xset fp rehash
+
 exec icewm-session
 EOF
             chmod +x /mnt/home/"$USERNAME"/.xinitrc
