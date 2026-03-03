@@ -313,6 +313,8 @@ ROOT="${DISK}${P}2"
 mkfs.fat -F32 "$EFI"
 
 if [ "$ENCRYPT" = "1" ]; then
+    # Install cryptsetup on live ISO if not present
+    command -v cryptsetup &>/dev/null || pacman -Sy --noconfirm cryptsetup
     # Format partition with LUKS2
     echo -n "$LUKS_PW" | cryptsetup luksFormat --type luks2 "$ROOT" -
     # Open the LUKS container
@@ -431,6 +433,8 @@ fstabgen -U /mnt >> /mnt/etc/fstab
 
 # Encryption setup inside installed system
 if [ "$ENCRYPT" = "1" ]; then
+    # Ensure cryptsetup is in the installed system
+    artix-chroot /mnt pacman -S --noconfirm cryptsetup
     # crypttab — maps cryptroot on boot
     LUKS_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
     echo "cryptroot UUID=$LUKS_UUID none luks" >> /mnt/etc/crypttab
