@@ -5,6 +5,7 @@ set -o pipefail
 # Restore terminal and show log if install fails
 trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
       exec 3>&- 2>/dev/null
+      kill "$WATCH_PID" 2>/dev/null || true
       kill "$GAUGE_PID" 2>/dev/null || true
       rm -f "${GAUGE_PIPE:-}" 2>/dev/null
       echo ""
@@ -525,9 +526,26 @@ INSTALL_LOG="/tmp/artix-install.log"
 exec 4>&1 5>&2        # save original stdout/stderr
 exec 1>"$INSTALL_LOG" 2>&1
 
+# Background watcher — tails log and updates gauge detail line
+CURRENT_PCT=0
+gauge_watch() {
+    tail -f "$INSTALL_LOG" 2>/dev/null | while IFS= read -r line; do
+        # Strip control chars, truncate to fit whiptail width
+        clean=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-65)
+        [ -z "$clean" ] && continue
+        echo "$CURRENT_PCT" >&3
+        echo "XXX" >&3
+        echo "$clean" >&3
+        echo "XXX" >&3
+    done
+}
+gauge_watch &
+WATCH_PID=$!
+
 gauge() {
-    local pct="$1" msg="$2"
-    echo "$pct" >&3
+    CURRENT_PCT="$1"
+    local msg="$2"
+    echo "$CURRENT_PCT" >&3
     echo "XXX" >&3
     echo "$msg" >&3
     echo "XXX" >&3
@@ -1324,6 +1342,7 @@ umount -R /mnt
 gauge 100 "Installation complete!"
 sleep 1
 exec 3>&-
+kill "$WATCH_PID" 2>/dev/null || true
 kill "$GAUGE_PID" 2>/dev/null || true
 rm -f "$GAUGE_PIPE"
 exec 1>&4 2>&5   # restore stdout/stderr
