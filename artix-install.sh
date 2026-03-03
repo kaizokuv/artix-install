@@ -3,13 +3,14 @@ set -e
 set -o pipefail
 
 # Restore terminal and show log if install fails
-trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
-      touch "${GAUGE_STOP_FILE:-/tmp/gauge_stop_dead}" 2>/dev/null
-      kill "$TICKER_PID" 2>/dev/null || true
-      kill "$GAUGE_PID"  2>/dev/null || true
+ trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
+      touch "${GAUGE_STOP_FILE:-/tmp/.gauge_dead}" 2>/dev/null
+      kill "${TICKER_PID:-}" 2>/dev/null || true
+      kill "${GAUGE_PID:-}"  2>/dev/null || true
       rm -f "${GAUGE_PIPE:-}" "${GAUGE_CMD_FILE:-}" "${GAUGE_STOP_FILE:-}" 2>/dev/null
+      umount -R /mnt 2>/dev/null || true
       echo ""
-      echo "INSTALL FAILED — see $INSTALL_LOG for details"
+      echo "INSTALL FAILED — see ${INSTALL_LOG:-/tmp/artix-install.log} for details"
       echo ""
       tail -20 "${INSTALL_LOG:-/dev/null}" 2>/dev/null
       exit 1' ERR
@@ -516,43 +517,50 @@ mount "$EFI" /mnt/boot
 # PROGRESS GAUGE
 # =========================
 INSTALL_LOG="/tmp/artix-install.log"
-GAUGE_PIPE=$(mktemp -u /tmp/gauge_XXXXXX)
 GAUGE_CMD_FILE=$(mktemp /tmp/gauge_cmd_XXXXXX)
 GAUGE_STOP_FILE=$(mktemp /tmp/gauge_stop_XXXXXX)
-rm -f "$GAUGE_STOP_FILE"   # absence = running, presence = stop
+rm -f "$GAUGE_STOP_FILE"
 echo "0|Starting installation..." > "$GAUGE_CMD_FILE"
-mkfifo "$GAUGE_PIPE"
 
-# Ticker: sole writer to the pipe, runs as background process
-# Uses the pipe path directly — no fd inheritance issues
-(
-    # Open write end of pipe
-    exec 3>"$GAUGE_PIPE"
-    while [ ! -f "$GAUGE_STOP_FILE" ]; do
-        IFS='|' read -r pct msg < "$GAUGE_CMD_FILE" 2>/dev/null || { sleep 1; continue; }
-        detail=$(grep -av '^$' "$INSTALL_LOG" 2>/dev/null | tail -1 \
-                 | sed 's/\x1b\[[0-9;]*m//g; s/[^[:print:]]//g' | cut -c1-66)
-        if [ -n "$detail" ]; then
-            printf '%s\nXXX\n%s\n%s\nXXX\n' "$pct" "$msg" "$detail" >&3 2>/dev/null || break
-        else
-            printf '%s\nXXX\n%s\nXXX\n' "$pct" "$msg" >&3 2>/dev/null || break
-        fi
-        sleep 1
-    done
-) &
-TICKER_PID=$!
-
-# Start whiptail reading from the pipe
-whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 < "$GAUGE_PIPE" &
-GAUGE_PID=$!
-
-# Redirect all install output to log — keeps gauge visible
+# Redirect install output to log before forking
 exec 4>&1 5>&2
 exec 1>"$INSTALL_LOG" 2>&1
 
 gauge() {
     echo "${1}|${2}" > "$GAUGE_CMD_FILE"
 }
+
+# Ticker writes to whiptail via a pipe using the correct XXX protocol:
+#   XXX
+#   <pct>
+#   <message>
+#   XXX
+# whiptail runs in the foreground owning the terminal; install runs backgrounded.
+_gauge_ticker() {
+    while [ ! -f "$GAUGE_STOP_FILE" ]; do
+        IFS='|' read -r pct msg < "$GAUGE_CMD_FILE" 2>/dev/null
+        detail=$(grep -av '^$' "$INSTALL_LOG" 2>/dev/null | tail -1                  | sed 's/\[[0-9;]*m//g; s/[^[:print:]]//g' | cut -c1-64)
+        if [ -n "$detail" ]; then
+            printf 'XXX
+%s
+%s
+%s
+XXX
+' "$pct" "$msg" "$detail"
+        else
+            printf 'XXX
+%s
+%s
+XXX
+' "$pct" "$msg"
+        fi
+        sleep 1
+    done
+}
+
+# Pipe ticker output into whiptail — whiptail in foreground, ticker in background
+_gauge_ticker | whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 &
+GAUGE_PID=$!
 
 gauge 2 "Partitioning disk..."
 
@@ -746,7 +754,7 @@ if [ "$FIRST_KERNEL" = "linux-lqx" ]; then
 elif [ "$FIRST_KERNEL" = "linux-cachyos" ]; then
     : # cachyos bundles headers
 fi
-if [ -d /etc/NetworkManager/system-connections ]; then
+if [ "$NET_CHOICE" = "NM" ] && [ -d /etc/NetworkManager/system-connections ]; then
     mkdir -p /mnt/etc/NetworkManager/system-connections
     cp /etc/NetworkManager/system-connections/* \
         /mnt/etc/NetworkManager/system-connections/ 2>/dev/null || true
@@ -1341,7 +1349,6 @@ esac
 # =========================
 # DONE
 # =========================
-umount -R /mnt
 gauge 100 "Installation complete!"
 sleep 2
 touch "$GAUGE_STOP_FILE"
@@ -1352,4 +1359,8 @@ rm -f "$GAUGE_PIPE" "$GAUGE_CMD_FILE" "$GAUGE_STOP_FILE"
 exec 1>&4 2>&5
 exec 4>&- 5>&-
 
-whiptail --title "$TITLE" --yesno "Install complete! Reboot now?" 10 50 && reboot || true
+umount -R /mnt 2>/dev/null || true
+
+whiptail --title "$TITLE" --yesno \
+    "Installation complete!\n\nInstall log saved to $INSTALL_LOG\n\nReboot now?" \
+    12 55 && reboot || true
