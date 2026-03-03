@@ -446,7 +446,7 @@ if [ "$ENCRYPT" = "1" ]; then
     artix-chroot /mnt mkinitcpio -P
 
     # Store LUKS UUID for bootloader cmdline
-    LUKS_CMDLINE="rd.luks.name=$LUKS_UUID=cryptroot"
+    LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID=cryptroot root=/dev/mapper/cryptroot"
 fi
 
 # Pacman optimizations
@@ -866,7 +866,8 @@ case "$BOOT" in
             --efi-directory=/boot \
             --bootloader-id=Artix
         if [ "$ENCRYPT" = "1" ]; then
-            sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$LUKS_CMDLINE\"|" /mnt/etc/default/grub
+            GRUB_LUKS="cryptdevice=UUID=$(blkid -s UUID -o value "$REAL_ROOT"):cryptroot root=/dev/mapper/cryptroot"
+            sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$GRUB_LUKS\"|" /mnt/etc/default/grub
             sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /mnt/etc/default/grub
         fi
         artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
@@ -881,23 +882,21 @@ case "$BOOT" in
                 --label 'Limine' \
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
-        # Modern Limine v6+ TOML config format
         if [ "$ENCRYPT" = "1" ]; then
             PART_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
-            LIMINE_CMDLINE="rd.luks.name=$PART_UUID=cryptroot root=/dev/mapper/cryptroot rw quiet"
+            LIMINE_CMDLINE="cryptdevice=UUID=$PART_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet"
         else
             ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
         cat > /mnt/boot/limine.conf << EOF
-timeout = 5
+timeout: 5
 
-[[entry]]
-label = "Artix Linux"
-protocol = "linux"
-kernel_path = "boot():/vmlinuz-$FIRST_KERNEL"
-kernel_cmdline = "$LIMINE_CMDLINE"
-module_path = "boot():/initramfs-$FIRST_KERNEL.img"
+/Artix Linux
+    protocol: linux
+    path: boot():/vmlinuz-$FIRST_KERNEL
+    cmdline: $LIMINE_CMDLINE
+    module_path: boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
     refind)
