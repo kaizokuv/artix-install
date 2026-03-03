@@ -113,6 +113,18 @@ if [[ "$SWAP" =~ Swapfile|Both ]]; then
 fi
 
 # =========================
+# ENCRYPTION
+# =========================
+ENCRYPT=0
+if whiptail --title "$TITLE" --yesno "Enable full disk encryption (LUKS2)?
+
+You will be prompted for a passphrase.
+You must enter it on every boot." 12 60; then
+    ENCRYPT=1
+    LUKS_PW=$(get_password "Encryption Passphrase")
+fi
+
+# =========================
 # LOCALE / TIMEZONE / KEYBOARD
 # =========================
 LOCALE=$(pick "Locale" "grep UTF-8 /usr/share/i18n/SUPPORTED | awk '{print \$1}'")
@@ -229,7 +241,7 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
     HYPRLAND_EXTRAS=0
     if echo "$DE_CHOICES" | grep -qw "Openbox"; then
         whiptail --title "$TITLE" --yesno \
-            "Install Openbox extras?\n\nobconf    — graphical config tool\ntint2     — taskbar/panel\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
+            "Install Openbox extras?\n\ntint2     — taskbar/panel\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
             15 52 && OPENBOX_EXTRAS=1 || true
     fi
     if echo "$DE_CHOICES" | grep -qw "Fluxbox"; then
@@ -299,6 +311,16 @@ EFI="${DISK}${P}1"
 ROOT="${DISK}${P}2"
 
 mkfs.fat -F32 "$EFI"
+
+if [ "$ENCRYPT" = "1" ]; then
+    # Format partition with LUKS2
+    echo -n "$LUKS_PW" | cryptsetup luksFormat --type luks2 "$ROOT" -
+    # Open the LUKS container
+    echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
+    REAL_ROOT="$ROOT"
+    ROOT="/dev/mapper/cryptroot"
+fi
+
 case $FS in
     ext4)  mkfs.ext4  -F "$ROOT" ;;
     btrfs) mkfs.btrfs -f "$ROOT" ;;
@@ -351,6 +373,16 @@ if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
     XORG_PKGS="xorg-server xorg-xinit"
 fi
 
+# Only install audio stack for DEs that actually use it
+AUDIO_PKGS=""
+AUDIO_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland"
+for _de in $AUDIO_DES; do
+    if echo "$DE_CHOICES" | grep -qw "$_de"; then
+        AUDIO_PKGS="pipewire pipewire-pulse pipewire-alsa wireplumber"
+        break
+    fi
+done
+
 # =========================
 # LIQUORIX REPO (if needed)
 # =========================
@@ -390,12 +422,26 @@ basestrap /mnt \
     base "$FIRST_KERNEL" linux-firmware $UCODE \
     dinit elogind-dinit dbus-dinit \
     networkmanager networkmanager-dinit \
-    doas rtkit polkit \
+    doas rtkit \
     $XORG_PKGS xdg-user-dirs \
-    pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
+    $AUDIO_PKGS \
     $GPU
 
 fstabgen -U /mnt >> /mnt/etc/fstab
+
+# Encryption setup inside installed system
+if [ "$ENCRYPT" = "1" ]; then
+    # crypttab — maps cryptroot on boot
+    LUKS_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
+    echo "cryptroot UUID=$LUKS_UUID none luks" >> /mnt/etc/crypttab
+
+    # Add encrypt hook to mkinitcpio
+    sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block encrypt filesystems fsck)/' /mnt/etc/mkinitcpio.conf
+    artix-chroot /mnt mkinitcpio -P
+
+    # Store LUKS UUID for bootloader cmdline
+    LUKS_CMDLINE="rd.luks.name=$LUKS_UUID=cryptroot"
+fi
 
 # Pacman optimizations
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
@@ -486,9 +532,16 @@ echo "permit persist :wheel" > /mnt/etc/doas.conf
 artix-chroot /mnt su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
 
 # =========================
-# PIPEWIRE AUTOSTART
+# PIPEWIRE AUTOSTART (only for DEs that use audio)
 # =========================
+AUDIO_DES_CHECK="Plasma XFCE LXQt Moksha Cosmic Hyprland"
+NEED_AUDIO=0
+for _de in $AUDIO_DES_CHECK; do
+    echo "$DE_CHOICES" | grep -qw "$_de" && NEED_AUDIO=1 && break
+done
+
 mkdir -p /mnt/usr/local/bin
+if [ "$NEED_AUDIO" = "1" ]; then
 
 cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
@@ -533,12 +586,6 @@ EOF
 # Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
 # in that directory into broken .desktop files pointing to wrong paths
 
-# .xprofile — bare WMs via lightdm
-cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
-#!/bin/bash
-exec /usr/local/bin/start-pipewire
-EOF
-
 # Moksha
 mkdir -p /mnt/home/"$USERNAME"/.e/e/applications/startup
 cat > /mnt/home/"$USERNAME"/.e/e/applications/startup/pipewire.desktop << 'EOF'
@@ -547,6 +594,7 @@ Type=Application
 Name=PipeWire
 Exec=/usr/local/bin/start-pipewire
 EOF
+fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
@@ -636,14 +684,14 @@ for DE in $DE_CHOICES; do
             artix-chroot /mnt pacman -S --noconfirm lxqt pavucontrol
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm i3-wm
             if [ "${I3_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm dmenu xterm firefox fastfetch
             fi
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib pavucontrol \
+                xmonad xmonad-contrib \
                 thunar polybar picom st git
             # Clone dotfiles into ~/.config
             artix-chroot /mnt bash -c "
@@ -655,25 +703,32 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Openbox)
-            artix-chroot /mnt pacman -S --noconfirm openbox xterm pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm openbox xterm
             if [ "${OPENBOX_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm obconf tint2 picom rofi firefox fastfetch
+                artix-chroot /mnt pacman -S --noconfirm tint2 picom rofi firefox fastfetch
             fi
             ;;
         Fluxbox)
-            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm
             if [ "${FLUXBOX_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm feh picom rofi firefox fastfetch
             fi
             ;;
         IceWM)
-            artix-chroot /mnt pacman -S --noconfirm icewm xterm pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm icewm xterm
             if [ "${ICEWM_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm iceconf feh rofi firefox fastfetch
             fi
             ;;
         Hyprland)
             artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland pavucontrol
+            # Hyprland pipewire autostart via hyprland.conf exec-once
+            # .xprofile is X11-only and does not run under Wayland/greetd
+            mkdir -p /mnt/home/"$USERNAME"/.config/hypr
+            cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
+exec-once = /usr/local/bin/start-pipewire
+HYPREOF
+            chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
             if [ "${HYPRLAND_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm waybar wofi swaylock grim slurp firefox fastfetch
             fi
@@ -804,6 +859,10 @@ case "$BOOT" in
             --target=x86_64-efi \
             --efi-directory=/boot \
             --bootloader-id=Artix
+        if [ "$ENCRYPT" = "1" ]; then
+            sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$LUKS_CMDLINE\"|" /mnt/etc/default/grub
+            sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /mnt/etc/default/grub
+        fi
         artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
         ;;
     limine)
@@ -816,21 +875,32 @@ case "$BOOT" in
                 --label 'Limine' \
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
-        KERNEL_IMG="/boot/vmlinuz-$FIRST_KERNEL"
-        INITRD_IMG="/boot/initramfs-$FIRST_KERNEL.img"
-        # Fallback if expected path doesn't exist
-        [ ! -f "/mnt$KERNEL_IMG" ] && KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt/boot||')
-        [ ! -f "/mnt$INITRD_IMG" ] && INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt/boot||')
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        printf 'timeout: 5\n\n/Artix Linux\n    protocol: linux\n    kernel_path: boot():%s\n    cmdline: root=UUID=%s rw quiet\n    module_path: boot():%s\n' \
-            "$KERNEL_IMG" "$ROOT_UUID" "$INITRD_IMG" > /mnt/boot/limine.conf
+        # Modern Limine v6+ TOML config format
+        LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
+        [ "$ENCRYPT" = "1" ] && LIMINE_CMDLINE="$LUKS_CMDLINE root=/dev/mapper/cryptroot rw quiet"
+        cat > /mnt/boot/limine.conf << EOF
+timeout = 5
+
+[[entry]]
+label = "Artix Linux"
+protocol = "linux"
+kernel_path = "boot():/vmlinuz-$FIRST_KERNEL"
+kernel_cmdline = "$LIMINE_CMDLINE"
+module_path = "boot():/initramfs-$FIRST_KERNEL.img"
+EOF
         ;;
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        printf '"Boot with standard options"  "root=UUID=%s rw quiet"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/dinit"\n"Boot with minimal options"   "root=UUID=%s rw"\n' \
-            "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
+        if [ "$ENCRYPT" = "1" ]; then
+            printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet"\n' \
+                "$LUKS_CMDLINE" > /mnt/boot/refind_linux.conf
+        else
+            printf '"Boot with standard options"  "root=UUID=%s rw quiet"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/dinit"\n"Boot with minimal options"   "root=UUID=%s rw"\n' \
+                "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
+        fi
         ;;
 esac
 
