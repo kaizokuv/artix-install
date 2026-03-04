@@ -7,10 +7,8 @@ set -o pipefail
 
 # Restore terminal and show log if install fails
  trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
-      touch "${GAUGE_STOP_FILE:-/tmp/.gauge_dead}" 2>/dev/null
-      kill "${TICKER_PID:-}" 2>/dev/null || true
-      kill "${GAUGE_PID:-}"  2>/dev/null || true
-      rm -f "${GAUGE_PIPE:-}" "${GAUGE_CMD_FILE:-}" "${GAUGE_STOP_FILE:-}" 2>/dev/null
+      kill "${GAUGE_PID:-}" 2>/dev/null || true
+      rm -f "${GAUGE_CMD_FILE:-}" 2>/dev/null
       umount -R /mnt 2>/dev/null || true
       echo ""
       echo "INSTALL FAILED — see ${INSTALL_LOG:-/tmp/artix-install.log} for details"
@@ -546,28 +544,18 @@ mkdir -p /mnt/boot
 # =========================
 INSTALL_LOG="/tmp/artix-install.log"
 GAUGE_CMD_FILE=$(mktemp /tmp/gauge_cmd_XXXXXX)
-GAUGE_STOP_FILE=$(mktemp /tmp/gauge_stop_XXXXXX)
-rm -f "$GAUGE_STOP_FILE"
 echo "0|Starting installation..." > "$GAUGE_CMD_FILE"
+> "$INSTALL_LOG"  # create empty log now so tail never fails
 
-# Redirect install output to log before forking
-exec 4>&1 5>&2
-exec 1>"$INSTALL_LOG" 2>&1
-
-gauge() {
-    echo "${1}|${2}" > "$GAUGE_CMD_FILE"
-}
-
-# Ticker writes to whiptail via a pipe using the correct XXX protocol:
-#   XXX
-#   <pct>
-#   <message>
-#   XXX
-# whiptail runs in the foreground owning the terminal; install runs backgrounded.
-_gauge_ticker() {
-    while [ ! -f "$GAUGE_STOP_FILE" ]; do
-        IFS='|' read -r pct msg < "$GAUGE_CMD_FILE" 2>/dev/null
-        detail=$(grep -av '^$' "$INSTALL_LOG" 2>/dev/null | tail -1                  | sed 's/\[[0-9;]*m//g; s/[^[:print:]]//g' | cut -c1-64)
+# Ticker — sole writer to whiptail, runs every second
+# Piped directly into whiptail so no race on pipe open
+(
+    set +e  # never let errors in ticker kill the subshell
+    while true; do
+        sleep 1
+        [ -f "$GAUGE_CMD_FILE" ] || continue
+        IFS='|' read -r pct msg < "$GAUGE_CMD_FILE" 2>/dev/null || continue
+        detail=$(tail -1 "$INSTALL_LOG" 2>/dev/null                  | sed 's/\[[0-9;]*m//g; s/[^[:print:]	]//g'                  | tr -s ' ' | cut -c1-64)
         if [ -n "$detail" ]; then
             printf 'XXX
 %s
@@ -582,13 +570,18 @@ XXX
 XXX
 ' "$pct" "$msg"
         fi
-        sleep 1
     done
-}
-
-# Pipe ticker output into whiptail — whiptail in foreground, ticker in background
-_gauge_ticker | whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 &
+) | whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 &
 GAUGE_PID=$!
+TICKER_PID=$(pgrep -P $GAUGE_PID 2>/dev/null || echo "")
+
+# Redirect install output to log — gauge stays visible
+exec 4>&1 5>&2
+exec 1>"$INSTALL_LOG" 2>&1
+
+gauge() {
+    echo "${1}|${2}" > "$GAUGE_CMD_FILE"
+}
 
 gauge 2 "Partitioning disk..."
 
@@ -813,7 +806,20 @@ gauge 45 "Setting timezone..."
 artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime && hwclock --systohc"
 
 # Keyboard
-artix-chroot /mnt bash -c "echo 'KEYMAP=$KB_LAYOUT' > /etc/vconsole.conf"
+# Map X11 layout name to vconsole keymap (they differ for some layouts)
+case "$KB_LAYOUT" in
+    us-intl)   VC_KEYMAP="us" ;;
+    cz-qwerty) VC_KEYMAP="cz-qwerty" ;;
+    fr-bepo)   VC_KEYMAP="fr-bepo" ;;
+    br-abnt2)  VC_KEYMAP="br-abnt2" ;;
+    de-latin1) VC_KEYMAP="de-latin1" ;;
+    jp106)     VC_KEYMAP="jp106" ;;
+    *)         VC_KEYMAP="$KB_LAYOUT" ;;
+esac
+cat > /mnt/etc/vconsole.conf << EOF
+KEYMAP=$VC_KEYMAP
+FONT=default
+EOF
 mkdir -p /mnt/etc/X11/xorg.conf.d
 cat > /mnt/etc/X11/xorg.conf.d/00-keyboard.conf << KBEOF
 Section "InputClass"
@@ -836,8 +842,22 @@ gauge 55 "Creating user account..."
 artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
 artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chpasswd"
 
-# doas
-echo "permit persist :wheel" > /mnt/etc/doas.conf
+# doas — primary privilege escalation
+cat > /mnt/etc/doas.conf << 'EOF'
+permit persist :wheel
+permit nopass :wheel cmd pacman
+EOF
+chmod 0400 /mnt/etc/doas.conf
+
+# sudoers — uncomment wheel group so sudo works too
+if [ -f /mnt/etc/sudoers ]; then
+    sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
+    sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
+else
+    mkdir -p /mnt/etc/sudoers.d
+    echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
+    chmod 0440 /mnt/etc/sudoers.d/wheel
+fi
 
 # XDG user dirs
 artix-chroot /mnt su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
@@ -927,10 +947,22 @@ restart = true
 depends-on = elogind
 EOF
         else
+            # OpenRC: per-tty conf.d override
             mkdir -p /mnt/etc/conf.d
             cat > /mnt/etc/conf.d/agetty.tty1 << EOF
 agetty_options="--autologin $USERNAME --noclear"
 EOF
+            # OpenRC PAM: ensure pam_elogind registers the session
+            # and nullok lets empty-password autologin through cleanly
+            for pam_file in login system-auth; do
+                PAM_PATH="/mnt/etc/pam.d/$pam_file"
+                [ -f "$PAM_PATH" ] || continue
+                # nullok on pam_unix auth so autologin isn't rejected
+                sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
+                # pam_elogind session registration
+                grep -q 'pam_elogind.so' "$PAM_PATH" || \
+                    echo 'session optional pam_elogind.so' >> "$PAM_PATH"
+            done
         fi
         break
     fi
@@ -1384,11 +1416,9 @@ esac
 # =========================
 gauge 100 "Installation complete!"
 sleep 2
-touch "$GAUGE_STOP_FILE"
-sleep 1
-kill "$TICKER_PID" 2>/dev/null || true
-kill "$GAUGE_PID"  2>/dev/null || true
-rm -f "$GAUGE_PIPE" "$GAUGE_CMD_FILE" "$GAUGE_STOP_FILE"
+kill "$GAUGE_PID" 2>/dev/null || true
+wait "$GAUGE_PID" 2>/dev/null || true
+rm -f "$GAUGE_CMD_FILE"
 exec 1>&4 2>&5
 exec 4>&- 5>&-
 
