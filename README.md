@@ -36,3 +36,13 @@ curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-inst
 
 Then just go through the installer it is fairly simple and sit back and relax.
 <img width="919" height="992" alt="artix" src="https://github.com/user-attachments/assets/6dd221dc-adae-4560-8f51-e5359297c5e7" />
+
+
+
+
+## Things to add
+- [ ] s6 and runit
+- [ ] add MORE wms
+- [ ] improve the ram usage
+- [ ] add my own custom kernel
+- [ ] add a option to prerice your wm
