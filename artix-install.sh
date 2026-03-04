@@ -369,7 +369,7 @@ tui_partition_manager() {
                 DUALBOOT=0
                 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
                 PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
-                PART_SIZES=( "1" "$(( DISK_SIZE_GB - 1 ))" )
+                PART_SIZES=( "1" "0" )
                 PART_TYPES=( "EFI" "root" )
                 ;;
             dualboot)
@@ -451,28 +451,24 @@ tui_partition_manager() {
 tui_partition_manager
 
 if [ "$DUALBOOT" = "0" ]; then
-    # Fresh install — wipe and write new partition table
+    # Fresh install — wipe and write new partition table via sfdisk
     wipefs -af "$DISK"
-    (
-        echo g  # new GPT table
+    {
+        echo "label: gpt"
+        echo "label-id: $(cat /proc/sys/kernel/random/uuid)"
         for i in "${!PART_DEVS[@]}"; do
-            PIDX=$(( i + 1 ))
             SZ="${PART_SIZES[$i]}"
             TYPE="${PART_TYPES[$i]}"
-            echo n        # new partition
-            echo "$PIDX"  # partition number
-            echo ""        # default start (fdisk auto-aligns)
-            [ "$SZ" = "0" ] && echo "" || echo "+${SZ}G"
-            echo t        # set type
-            [ "$PIDX" -gt 1 ] && echo "$PIDX"  # partition number (not needed for first)
             case "$TYPE" in
-                EFI)  echo 1  ;;   # EFI System
-                swap) echo 19 ;;   # Linux swap
-                *)    echo 20 ;;   # Linux filesystem
+                EFI)  TYPECODE="C12A7328-F81F-11D2-BA4B-00A0C93EC93B" ;;
+                swap) TYPECODE="0657FD6D-A4AB-43C4-84E5-0933C84B4F4F" ;;
+                *)    TYPECODE="0FC63DAF-8483-4772-8E79-3D69D8477DE4" ;;
             esac
+            [ "$SZ" = "0" ] \
+                && echo "size=+, type=$TYPECODE" \
+                || echo "size=+${SZ}G, type=$TYPECODE"
         done
-        echo w
-    ) | fdisk "$DISK"
+    } | sfdisk "$DISK"
     udevadm settle
     mkfs.fat -F32 "$EFI"
     # Format swap partition now — activate after mount so fstabgen sees it
