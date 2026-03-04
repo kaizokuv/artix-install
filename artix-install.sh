@@ -1039,6 +1039,13 @@ for DE in $DE_CHOICES; do
             fi
             ;;
         XMonad)
+            # xmonad/xmonad-contrib live in Arch's [extra], not Artix repos
+            # Enable Arch repos via artix-archlinux-support first
+            artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
+            grep -q '\[extra\]' /mnt/etc/pacman.conf || \
+                printf '\n# Arch repos (needed for xmonad)\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' \
+                >> /mnt/etc/pacman.conf
+            artix-chroot /mnt pacman -Sy --noconfirm
             artix-chroot /mnt pacman -S --noconfirm \
                 xmonad xmonad-contrib \
                 thunar polybar picom st git
