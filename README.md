@@ -4,7 +4,7 @@ A simple TUI installer for Artix Linux with dinit or openrc that gives you a min
 (mostly) bloat-free system without sacrificing convenience.
 
 ## Why would I choose this over the official installer?
-- Well calamares is bloated installed it on a shitbox might be a pain loading a graphical session.
+- Well calamares is bloated installing it on a shitbox might be a pain loading a graphical session.
 
 - It installs only the necessary packages aka less bloat
 
