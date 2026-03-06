@@ -646,18 +646,11 @@ fi
 # CACHYOS REPO (if needed)
 # =========================
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Download CachyOS keyring and mirrorlist to a known temp dir
-    CACHY_TMP=$(mktemp -d /tmp/cachyos-XXXXXX)
-    CACHY_BASE="https://mirror.cachyos.org/repo/x86_64/cachyos"
-    curl -fkL --retry 3 -o "$CACHY_TMP/cachyos-keyring.pkg.tar.zst" \
-        "${CACHY_BASE}/cachyos-keyring-20240331-1-any.pkg.tar.zst"
-    curl -fkL --retry 3 -o "$CACHY_TMP/cachyos-mirrorlist.pkg.tar.zst" \
-        "${CACHY_BASE}/cachyos-mirrorlist-22-1-any.pkg.tar.zst"
+    # Install CachyOS keyring + mirrorlist directly via pacman (avoids TLS cert issues)
     pacman-key --init
-    pacman -U --noconfirm \
-        "$CACHY_TMP/cachyos-keyring.pkg.tar.zst" \
-        "$CACHY_TMP/cachyos-mirrorlist.pkg.tar.zst"
-    rm -rf "$CACHY_TMP"
+    pacman -U --noconfirm --disable-download-timeout \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
     grep -q '\[cachyos\]' /etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
     pacman -Sy
@@ -730,18 +723,10 @@ fi
 
 # Persist CachyOS repo into installed system for future updates
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    CACHY_BASE="https://mirror.cachyos.org/repo/x86_64/cachyos"
-    artix-chroot /mnt bash -c "
-        mkdir -p /tmp/cachyos-setup
-        curl -fkL --retry 3 -o /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \
-            '${CACHY_BASE}/cachyos-keyring-20240331-1-any.pkg.tar.zst'
-        curl -fkL --retry 3 -o /tmp/cachyos-setup/cachyos-mirrorlist.pkg.tar.zst \
-            '${CACHY_BASE}/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
-        pacman -U --noconfirm \
-            /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \
-            /tmp/cachyos-setup/cachyos-mirrorlist.pkg.tar.zst
-        rm -rf /tmp/cachyos-setup
-    "
+    # Use pacman -U with URL directly — avoids curl TLS cert issues on live ISO
+    artix-chroot /mnt pacman -U --noconfirm --disable-download-timeout \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
+        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
     grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm
