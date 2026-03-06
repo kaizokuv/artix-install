@@ -1051,7 +1051,7 @@ for DE in $DE_CHOICES; do
             artix-chroot /mnt pacman -Sy --noconfirm
             artix-chroot /mnt pacman -S --noconfirm \
                 xmonad xmonad-contrib \
-                thunar polybar picom st git
+                thunar polybar picom alacritty git
             # Clone dotfiles into ~/.config
             artix-chroot /mnt bash -c "
                 mkdir -p /home/$USERNAME/.config
