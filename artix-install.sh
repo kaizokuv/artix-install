@@ -12,9 +12,7 @@ set -o pipefail
        umount -R /mnt 2>/dev/null || true
        exit 1' ERR
 
-# =========================
-# SAFE RECOVERY
-# =========================
+# unmount everything if its already mounted from a previous run
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 
@@ -290,9 +288,36 @@ KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
 [ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
 FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
 
-# =========================
-# BOOTLOADER
-# =========================
+# cpu microcode + gpu drivers
+CPU_VENDOR=$(whiptail --title "$TITLE" --menu "CPU vendor" 10 50 3 \
+    "intel" "Intel" \
+    "amd"   "AMD" \
+    "other" "Other / VM" \
+    3>&1 1>&2 2>&3) || exit 1
+
+case "$CPU_VENDOR" in
+    intel) UCODE="intel-ucode" ;;
+    amd)   UCODE="amd-ucode" ;;
+    *)     UCODE="" ;;
+esac
+
+GPU_CHOICE=$(whiptail --title "$TITLE" --menu "GPU / graphics" 14 60 5 \
+    "intel"  "Intel iGPU (mesa + vulkan-intel)" \
+    "amd"    "AMD (mesa + vulkan-radeon)" \
+    "nvidia" "Nvidia (mesa + nvidia + nvidia-utils)" \
+    "hybrid" "Hybrid Intel+Nvidia (mesa + both)" \
+    "vm"     "VM / none (mesa only)" \
+    3>&1 1>&2 2>&3) || exit 1
+
+case "$GPU_CHOICE" in
+    intel)  GPU="mesa vulkan-intel" ;;
+    amd)    GPU="mesa vulkan-radeon" ;;
+    nvidia) GPU="mesa nvidia nvidia-utils" ;;
+    hybrid) GPU="mesa vulkan-intel nvidia nvidia-utils" ;;
+    vm)     GPU="mesa" ;;
+esac
+
+# bootloader
 if [ "$UEFI" = "1" ]; then
     BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
         "grub"   "GRUB2 (most compatible, required for dual-boot)" \
@@ -327,13 +352,7 @@ NET_CHOICE=$(whiptail --title "$TITLE" --menu \
     3>&1 1>&2 2>&3) || NET_CHOICE="NM"
 
 
-# =========================
-# PARTITION
-# =========================
-# =========================
-# =========================
-# TUI PARTITION MANAGER
-# =========================
+# partition manager
 PART_DEVS=()
 PART_SIZES=()
 PART_TYPES=()
@@ -538,10 +557,7 @@ mkdir -p /mnt/boot
 # Activate swap partition now so fstabgen picks it up
 [ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
 
-# =========================
-# PROGRESS
-# =========================
-# Print section headers during install
+# section headers during install
 gauge() {
     echo ""
     echo "==> ${2}"
@@ -551,9 +567,7 @@ gauge() {
 
 gauge 2 "Partitioning disk..."
 
-# =========================
-# SWAPFILE
-# =========================
+# swapfile
 if [[ "$SWAP" =~ Swapfile|Both ]]; then
     if [[ "$FS" == "btrfs" ]]; then
         truncate -s 0 /mnt/swapfile
@@ -566,46 +580,13 @@ if [[ "$SWAP" =~ Swapfile|Both ]]; then
     mkswap /mnt/swapfile
 fi
 
-# =========================
-# CPU / GPU DETECTION
-# =========================
-# CPU microcode — exclusive detection
-if grep -qi "intel" /proc/cpuinfo; then
-    UCODE="intel-ucode"
-elif grep -qi "amd" /proc/cpuinfo; then
-    UCODE="amd-ucode"
-else
-    UCODE=""
-fi
-
-# Always start with mesa — needed for iGPU, Wayland, PRIME offload
-GPU="mesa"
-if lspci | grep -qi nvidia; then
-    GPU="$GPU nvidia nvidia-utils"
-fi
-if lspci | grep -qiE "amd|radeon"; then
-    GPU="$GPU vulkan-radeon"
-fi
-if lspci | grep -qi "intel.*graphics\|vga.*intel"; then
-    GPU="$GPU vulkan-intel"
-fi
-
-# Bare WMs don't use GL at all — modesetting DDX only needs libdrm which
-# is already a kernel dependency. Skip mesa entirely to avoid pulling in LLVM.
+# icewm doesnt need mesa/llvm so skip gpu entirely to save ~200mb
 BARE_WM_ONLY=1
-# IceWM is the only WM that can run without any GPU acceleration
-# Everything else (i3/XMonad/Openbox/Fluxbox/Hyprland) uses compositors or GL
-FULL_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland i3 XMonad Openbox Fluxbox"
-for _de in $FULL_DES; do
-    if echo "$DE_CHOICES" | grep -qw "$_de"; then
-        BARE_WM_ONLY=0
-        break
-    fi
+for _de in Plasma XFCE LXQt Moksha Cosmic Hyprland i3 XMonad Openbox Fluxbox; do
+    echo "$DE_CHOICES" | grep -qw "$_de" && BARE_WM_ONLY=0 && break
 done
-[ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0  # CLI needs no GPU at all
-if [ "$BARE_WM_ONLY" = "1" ]; then
-    GPU=""
-fi
+[ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
+[ "$BARE_WM_ONLY" = "1" ] && GPU=""
 
 # XORG_PKGS set from USE_XLIBRE chosen upfront
 XORG_PKGS=""
@@ -648,9 +629,7 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
     pacman -Sy
 fi
 
-# =========================
-# CACHYOS REPO (if needed)
-# =========================
+# cachyos repo — only needed for linux-cachyos kernel
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     # Install CachyOS keyring + mirrorlist directly via pacman (avoids TLS cert issues)
     pacman-key --init
@@ -709,7 +688,7 @@ if [ "$ENCRYPT" = "1" ]; then
     LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
 fi
 
-# Pacman optimizations
+# pacman tweaks
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
 # Block legacy xf86-video DDX drivers — modesetting handles everything
@@ -718,7 +697,7 @@ grep -q 'xf86-video-amdgpu' /mnt/etc/pacman.conf || \
     sed -i '/^\[options\]/a IgnorePkg = xf86-video-amdgpu xf86-video-intel xf86-video-nouveau xf86-video-fbdev xf86-video-vesa' \
     /mnt/etc/pacman.conf
 
-# Persist Liquorix repo into installed system
+# liquorix repo in the installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
     artix-chroot /mnt pacman-key --keyserver hkps://keyserver.ubuntu.com --recv-keys 9AE4078033F8024D
     artix-chroot /mnt pacman-key --lsign-key 9AE4078033F8024D
@@ -727,7 +706,7 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
     artix-chroot /mnt pacman -Sy --noconfirm
 fi
 
-# Persist CachyOS repo into installed system for future updates
+# cachyos repo in the installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     # Use pacman -U with URL directly — avoids curl TLS cert issues on live ISO
     artix-chroot /mnt pacman -U --noconfirm --disable-download-timeout \
@@ -774,7 +753,7 @@ artix-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
 gauge 45 "Setting timezone..."
 artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime && hwclock --systohc"
 
-# Keyboard
+# keyboard layout
 # Map X11 layout name to vconsole keymap (they differ for some layouts)
 case "$KB_LAYOUT" in
     us-intl)   VC_KEYMAP="us" ;;
@@ -798,7 +777,7 @@ Section "InputClass"
 EndSection
 KBEOF
 
-# Hostname
+# hostname
 gauge 50 "Configuring hostname..."
 echo "$HOSTNAME" > /mnt/etc/hostname
 
@@ -811,14 +790,14 @@ gauge 55 "Creating user account..."
 artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
 artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chpasswd"
 
-# doas — primary privilege escalation
+# doas config
 cat > /mnt/etc/doas.conf << 'EOF'
 permit persist :wheel
 permit nopass :wheel cmd pacman
 EOF
 chmod 0400 /mnt/etc/doas.conf
 
-# sudoers — uncomment wheel group so sudo works too
+# sudoers
 if [ -f /mnt/etc/sudoers ]; then
     sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
     sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
@@ -828,7 +807,7 @@ else
     chmod 0440 /mnt/etc/sudoers.d/wheel
 fi
 
-# XDG user dirs
+# xdg dirs
 artix-chroot /mnt su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
 
 # =========================
@@ -898,16 +877,16 @@ fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
-# Bare WMs use startx from TTY1 — no display manager needed
+# bare WMs autologin on tty1 and startx
 BARE_WMS="i3 XMonad Openbox Fluxbox IceWM"
 for _wm in $BARE_WMS; do
     if echo "$DE_CHOICES" | grep -qw "$_wm"; then
-        # .bash_profile launches startx only on TTY1
+        # startx on login if on tty1
         cat >> /mnt/home/"$USERNAME"/.bash_profile << 'EOF'
 [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
 EOF
         chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
-        # Override agetty-tty1 to autologin
+        # autologin
         if [ "$INIT" = "dinit" ]; then
             cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
 type = process
@@ -938,9 +917,7 @@ EOF
 done
 
 gauge 60 "Configuring swap..."
-# =========================
-# ZRAM
-# =========================
+# zram swap
 if [[ "$SWAP" =~ Zram|Both ]]; then
     ZRAM_MB=$(( RAM_KB / 1024 / 2 ))
     (( ZRAM_MB > 8192 )) && ZRAM_MB=8192
@@ -982,9 +959,7 @@ EOF
 fi
 
 gauge 65 "Installing desktop environment..."
-# =========================
-# DESKTOP INSTALL
-# =========================
+# install whatever DE/WM the user picked
 if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
     DM="greetd"
 elif echo "$DE_CHOICES" | grep -qw "Hyprland"; then
@@ -1159,9 +1134,7 @@ EOF
                 fi
             done
 
-# =========================
-# XINITRC FOR BARE WMs
-# =========================
+# write .xinitrc for bare WMs
 BARE_WMS_SELECTED=""
 for _wm in i3 XMonad Openbox Fluxbox IceWM; do
     echo "$DE_CHOICES" | grep -qw "$_wm" && BARE_WMS_SELECTED="$BARE_WMS_SELECTED $_wm"
@@ -1279,9 +1252,7 @@ fi
 [ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
 
 gauge 85 "Enabling services..."
-# =========================
-# INIT SERVICES
-# =========================
+# enable services
 
 # CPU governor
 cat > /mnt/etc/cpupower.conf << 'EOF'
@@ -1439,9 +1410,7 @@ EOF
         ;;
 esac
 
-# =========================
-# DONE
-# =========================
+# done
 gauge 100 "Installation complete!"
 
 umount -R /mnt 2>/dev/null || true
