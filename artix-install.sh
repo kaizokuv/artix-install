@@ -27,22 +27,7 @@ fi
 clear
 TITLE="Artix Master Installer"
 
-whiptail --title "$TITLE" --msgbox "Welcome to the Artix Linux Installer
-
-This script will guide you through a minimal, bloat-free
-installation of Artix Linux 
-
-You will be asked to configure:
-  - Disk, filesystem and swap
-  - Locale, timezone and keyboard layout
-  - Hostname and user account
-  - Desktop environment (or CLI-only)
-  - Kernel and bootloader
-
-WARNING: This will erase the selected disk entirely.
-Make sure you have backups before continuing.
-
-Press Enter to begin." 22 60
+whiptail --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
 
 # =========================
 # HELPERS
@@ -114,6 +99,7 @@ RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
 
 SWAP_SIZE_MB=4096
+SWAP_SIZE_GB=4
 if [[ "$SWAP" =~ Swapfile|Both ]]; then
     SWAP_MENU_ARGS=()
     for SZ in 1 2 4 8 16; do
@@ -148,9 +134,9 @@ fi
 LOCALE=$(pick "Locale" "grep UTF-8 /usr/share/i18n/SUPPORTED | awk '{print \$1}'")
 TIMEZONE=$(pick "Timezone" "awk '/^[^#]/{print \$3}' /usr/share/zoneinfo/zone.tab | sort")
 
-KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 23 \
+KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 40 74 15 \
     "us"        "English (US)" \
-    "uk"        "English (UK)" \
+    "gb"        "English (UK)" \
     "us-intl"   "English (US International)" \
     "de"        "German" \
     "de-latin1" "German (Latin-1)" \
@@ -235,43 +221,7 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
         DE_CHOICES="CLI"
     fi
 
-    PLASMA_EXTRAS=0; XFCE_EXTRAS=0; I3_EXTRAS=0
-    OPENBOX_EXTRAS=0; FLUXBOX_EXTRAS=0; ICEWM_EXTRAS=0; HYPRLAND_EXTRAS=0
-    if echo "$DE_CHOICES" | grep -qw "Plasma"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install KDE apps?\n\ndolphin  — file manager\nkonsole  — terminal\nkate     — text editor\nark      — archive manager\nokular   — document viewer\ngwenview — image viewer\nkcalc    — calculator\nfirefox  — web browser\nfastfetch — system info" \
-            20 55 && PLASMA_EXTRAS=1 || true
-    fi
-    if echo "$DE_CHOICES" | grep -qw "XFCE"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install XFCE extras?\n\nxfce4-goodies — panel plugins, thunar plugins,\nscreenshot tool, archive manager, media player\nfirefox        — web browser\nfastfetch      — system info" \
-            14 58 && XFCE_EXTRAS=1 || true
-    fi
-    if echo "$DE_CHOICES" | grep -qw "i3"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install i3 extras?\n\ndmenu     — application launcher\nxterm     — basic terminal\nfirefox   — web browser\nfastfetch — system info" \
-            13 50 && I3_EXTRAS=1 || true
-    fi
-    if echo "$DE_CHOICES" | grep -qw "Openbox"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install Openbox extras?\n\ntint2     — taskbar/panel\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
-            15 52 && OPENBOX_EXTRAS=1 || true
-    fi
-    if echo "$DE_CHOICES" | grep -qw "Fluxbox"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install Fluxbox extras?\n\nfeh       — wallpaper setter\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
-            14 52 && FLUXBOX_EXTRAS=1 || true
-    fi
-    if echo "$DE_CHOICES" | grep -qw "IceWM"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install IceWM extras?\n\niceconf   — graphical config tool\nfeh       — wallpaper setter\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
-            14 52 && ICEWM_EXTRAS=1 || true
-    fi
-    if echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-        whiptail --title "$TITLE" --yesno \
-            "Install Hyprland extras?\n\nwaybar    — status bar\nwofi      — app launcher\nswaylock  — screen locker\ngrim+slurp — screenshots\nfirefox   — web browser\nfastfetch — system info" \
-            16 56 && HYPRLAND_EXTRAS=1 || true
-    fi
+    # extras vars unused — package picker at end handles extra software
 fi
 
 # =========================
@@ -352,7 +302,6 @@ NET_CHOICE=$(whiptail --title "$TITLE" --menu \
     "NM"     "NetworkManager -- full featured, ~30MB" \
     3>&1 1>&2 2>&3) || NET_CHOICE="NM"
 
-
 # partition manager
 PART_DEVS=()
 PART_SIZES=()
@@ -362,7 +311,6 @@ DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""
 ROOT=""
 DUALBOOT=0
-
 
 while true; do
     TABLE=""
@@ -534,8 +482,6 @@ else
     SWAP_PART=""
 fi
 
-
-
 if [ "$ENCRYPT" = "1" ]; then
     command -v cryptsetup &>/dev/null || pacman -Sy --noconfirm cryptsetup
     echo -n "$LUKS_PW" | cryptsetup luksFormat --type luks2 "$ROOT" -
@@ -565,9 +511,6 @@ gauge() {
     echo ""
 }
 
-
-gauge 2 "Partitioning disk..."
-
 # swapfile
 if [[ "$SWAP" =~ Swapfile|Both ]]; then
     if [[ "$FS" == "btrfs" ]]; then
@@ -579,6 +522,7 @@ if [[ "$SWAP" =~ Swapfile|Both ]]; then
     fi
     chmod 600 /mnt/swapfile
     mkswap /mnt/swapfile
+    swapon /mnt/swapfile  # activate so fstabgen picks it up
 fi
 
 # icewm doesnt need mesa/llvm so skip gpu entirely to save ~200mb
@@ -655,9 +599,9 @@ gauge 20 "Installing base system (this takes a while)..."
 basestrap /mnt \
     base "$FIRST_KERNEL" linux-firmware $UCODE \
     $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
-    $([ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc") \
-    doas rtkit \
-    $XORG_PKGS xdg-user-dirs \
+    $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
+    doas $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
+    $XORG_PKGS \
     $AUDIO_PKGS \
     $GPU
 
@@ -724,6 +668,7 @@ if [ "$FIRST_KERNEL" = "linux-lqx" ]; then
 elif [ "$FIRST_KERNEL" = "linux-cachyos" ]; then
     : # cachyos bundles headers
 fi
+# copy NM wifi profiles when NM is selected
 if [ "$NET_CHOICE" = "NM" ] && [ -d /etc/NetworkManager/system-connections ]; then
     mkdir -p /mnt/etc/NetworkManager/system-connections
     cp /etc/NetworkManager/system-connections/* \
@@ -743,11 +688,7 @@ for K in $KERNEL_CHOICES; do
     fi
 done
 
-# =========================
-# CHROOT CONFIG
-# =========================
-
-# Locale and timezone
+# locale and timezone
 gauge 40 "Setting locale..."
 artix-chroot /mnt bash -c "echo '$LOCALE UTF-8' >> /etc/locale.gen && locale-gen"
 artix-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
@@ -781,6 +722,7 @@ KBEOF
 # hostname
 gauge 50 "Configuring hostname..."
 echo "$HOSTNAME" > /mnt/etc/hostname
+printf "127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost\n" "$HOSTNAME" > /mnt/etc/hosts
 
 # Passwords — read directly from files inside chroot, no encoding needed
 # Passwords — pass directly as env vars, no files, no subshells
@@ -790,6 +732,8 @@ artix-chroot /mnt bash -c "echo root:\$(echo $ROOTPW_B64 | base64 -d) | chpasswd
 gauge 55 "Creating user account..."
 artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
 artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chpasswd"
+USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
+USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
 # doas config
 cat > /mnt/etc/doas.conf << 'EOF'
@@ -808,8 +752,11 @@ else
     chmod 0440 /mnt/etc/sudoers.d/wheel
 fi
 
-# xdg dirs
-artix-chroot /mnt su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
+# xdg dirs — create standard dirs directly, avoids chroot session issues
+for d in Desktop Documents Downloads Music Pictures Public Templates Videos; do
+    mkdir -p "/mnt/home/$USERNAME/$d"
+done
+chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # =========================
 # PIPEWIRE AUTOSTART (only for DEs that use audio)
@@ -850,9 +797,6 @@ done
 EOF
 chmod +x /mnt/usr/local/bin/start-pipewire
 
-USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
-USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
-
 # XDG autostart — works for Plasma X11, XFCE, LXQt
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart
 cat > /mnt/home/"$USERNAME"/.config/autostart/pipewire.desktop << 'EOF'
@@ -866,14 +810,15 @@ EOF
 # Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
 # in that directory into broken .desktop files pointing to wrong paths
 
-# Moksha
-mkdir -p /mnt/home/"$USERNAME"/.e/e/applications/startup
-cat > /mnt/home/"$USERNAME"/.e/e/applications/startup/pipewire.desktop << 'EOF'
+if echo "$DE_CHOICES" | grep -qw "Moksha"; then
+    mkdir -p /mnt/home/"$USERNAME"/.e/e/applications/startup
+    cat > /mnt/home/"$USERNAME"/.e/e/applications/startup/pipewire.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=PipeWire
 Exec=/usr/local/bin/start-pipewire
 EOF
+fi
 fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
@@ -980,42 +925,30 @@ for DE in $DE_CHOICES; do
             # Hand-picked essentials only: shell, compositor, settings, network, audio,
             # notifications, power management, display config, bluetooth, theming
             artix-chroot /mnt pacman -S --noconfirm \
-                plasma-desktop        `# core desktop shell` \
-                kwin                  `# compositor/window manager` \
-                plasma-pa             `# audio volume applet` \
-                plasma-nm             `# network manager applet` \
-                powerdevil            `# power management` \
-                bluedevil             `# bluetooth` \
-                kscreen               `# display configuration` \
-                ksystemstats          `# system monitor backend` \
-                kde-gtk-config        `# GTK app theming integration` \
-                breeze                `# default theme` \
-                breeze-gtk            `# GTK breeze theme` \
-                knotifications        `# notification framework` \
-                kwallet               `# credential storage` \
-                polkit-kde-agent      `# privilege escalation dialogs` \
-                xdg-desktop-portal-kde \
-                sddm-kcm              `# SDDM settings in system settings`
-            if [ "${PLASMA_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm \
-                    dolphin konsole kate ark okular gwenview kcalc firefox fastfetch
-            fi
+                plasma-desktop \
+                kwin \
+                plasma-pa \
+                plasma-nm \
+                powerdevil \
+                kscreen \
+                kde-gtk-config \
+                breeze breeze-gtk \
+                knotifications \
+                polkit-kde-agent \
+                xdg-desktop-portal-kde
+
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
                 xfce4 xdg-desktop-portal-gtk pavucontrol
-            if [ "${XFCE_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm xfce4-goodies firefox fastfetch
-            fi
+
             ;;
         LXQt)
-            artix-chroot /mnt pacman -S --noconfirm lxqt pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm lxqt
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm
-            if [ "${I3_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm dmenu xterm firefox fastfetch
-            fi
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu
+
             ;;
         XMonad)
             # xmonad/xmonad-contrib live in Arch's [extra], not Artix repos
@@ -1025,9 +958,7 @@ for DE in $DE_CHOICES; do
                 printf '\n# Arch repos (needed for xmonad)\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' \
                 >> /mnt/etc/pacman.conf
             artix-chroot /mnt pacman -Sy --noconfirm
-            artix-chroot /mnt pacman -S --noconfirm \
-                xmonad xmonad-contrib \
-                thunar polybar picom alacritty git
+            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib git
             # Clone dotfiles into ~/.config
             artix-chroot /mnt bash -c "
                 mkdir -p /home/$USERNAME/.config
@@ -1039,22 +970,16 @@ for DE in $DE_CHOICES; do
             ;;
         Openbox)
             artix-chroot /mnt pacman -S --noconfirm openbox xterm
-            if [ "${OPENBOX_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm tint2 picom rofi firefox fastfetch
-            fi
+
             ;;
         Fluxbox)
             artix-chroot /mnt pacman -S --noconfirm fluxbox xterm
-            if [ "${FLUXBOX_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm feh picom rofi firefox fastfetch
-            fi
+
             ;;
         IceWM)
-            artix-chroot /mnt pacman -S --noconfirm icewm xterm ttf-dejavu
+            artix-chroot /mnt pacman -S --noconfirm icewm xterm
             artix-chroot /mnt fc-cache -fv &>/dev/null
-            if [ "${ICEWM_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm iceconf feh rofi firefox fastfetch
-            fi
+
             mkdir -p /mnt/home/"$USERNAME"/.config/icewm
             # Minimal Xorg config — prevents zen kernel DRM over-allocation
             mkdir -p /mnt/etc/X11/xorg.conf.d
@@ -1097,9 +1022,7 @@ EOF
 exec-once = /usr/local/bin/start-pipewire
 HYPREOF
             chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
-            if [ "${HYPRLAND_EXTRAS:-0}" = "1" ]; then
-                artix-chroot /mnt pacman -S --noconfirm waybar wofi swaylock grim slurp firefox fastfetch
-            fi
+
             mkdir -p /mnt/usr/share/wayland-sessions
             cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
 [Desktop Entry]
@@ -1135,73 +1058,6 @@ EOF
                 fi
             done
 
-# write .xinitrc for bare WMs
-BARE_WMS_SELECTED=""
-for _wm in i3 XMonad Openbox Fluxbox IceWM; do
-    echo "$DE_CHOICES" | grep -qw "$_wm" && BARE_WMS_SELECTED="$BARE_WMS_SELECTED $_wm"
-done
-BARE_WMS_SELECTED="${BARE_WMS_SELECTED# }"  # trim leading space
-
-if [ -n "$BARE_WMS_SELECTED" ]; then
-    # Build exec command map
-    wm_exec() {
-        case "$1" in
-            i3)      echo "exec i3" ;;
-            XMonad)  echo "exec xmonad" ;;
-            Openbox) echo "exec openbox-session" ;;
-            Fluxbox) echo "exec startfluxbox" ;;
-            IceWM)   echo "exec icewm-session" ;;
-        esac
-    }
-
-    WM_COUNT=$(echo "$BARE_WMS_SELECTED" | wc -w)
-
-    {
-        cat << 'XINITRC_HEADER'
-#!/bin/sh
-# Kill any stale X locks
-rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
-
-# Screen settings
-xset s off
-xset -dpms
-xset s noblank
-
-# Font paths
-xset fp+ /usr/share/fonts/TTF 2>/dev/null
-xset fp+ /usr/share/fonts/dejavu 2>/dev/null
-xset fp rehash 2>/dev/null
-
-XINITRC_HEADER
-
-        if [ "$WM_COUNT" -eq 1 ]; then
-            # Single WM — exec directly
-            wm_exec "$BARE_WMS_SELECTED"
-        else
-            # Multiple WMs — show a simple select menu at login
-            echo '# Multiple WMs installed — pick one at login'
-            echo 'echo "Select window manager:"'
-            IDX=1
-            for _wm in $BARE_WMS_SELECTED; do
-                echo "echo \"  $IDX) $_wm\""
-                IDX=$(( IDX + 1 ))
-            done
-            echo 'printf "Choice: "'
-            echo 'read -r _choice'
-            IDX=1
-            for _wm in $BARE_WMS_SELECTED; do
-                echo "[ \"\$_choice\" = \"$IDX\" ] && $(wm_exec $_wm)"
-                IDX=$(( IDX + 1 ))
-            done
-            # Default to first WM if no valid choice
-            echo "# Default fallback"
-            wm_exec "$(echo "$BARE_WMS_SELECTED" | awk '{print $1}')"
-        fi
-    } > /mnt/home/"$USERNAME"/.xinitrc
-    chmod +x /mnt/home/"$USERNAME"/.xinitrc
-    chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.xinitrc
-fi
-
             # Stub out systemd dbus interfaces that cosmic-osd/cosmic-settings poll for
             # Without these stubs they spin at 99% CPU waiting for a response that never comes
             mkdir -p /mnt/usr/share/dbus-1/services
@@ -1224,6 +1080,56 @@ EOF
             ;;
     esac
 done
+
+# write .xinitrc for bare WMs — done after loop so all WMs are installed
+BARE_WMS_SELECTED=""
+for _wm in i3 XMonad Openbox Fluxbox IceWM; do
+    echo "$DE_CHOICES" | grep -qw "$_wm" && BARE_WMS_SELECTED="$BARE_WMS_SELECTED $_wm"
+done
+BARE_WMS_SELECTED="${BARE_WMS_SELECTED# }"
+
+if [ -n "$BARE_WMS_SELECTED" ]; then
+    wm_exec() {
+        case "$1" in
+            i3)      echo "exec i3" ;;
+            XMonad)  echo "exec xmonad" ;;
+            Openbox) echo "exec openbox-session" ;;
+            Fluxbox) echo "exec startfluxbox" ;;
+            IceWM)   echo "exec icewm-session" ;;
+        esac
+    }
+    WM_COUNT=$(echo "$BARE_WMS_SELECTED" | wc -w)
+    {
+        cat << 'XINITRC_HEADER'
+#!/bin/sh
+rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
+xset s off; xset -dpms; xset s noblank
+xset fp+ /usr/share/fonts/TTF 2>/dev/null
+xset fp+ /usr/share/fonts/dejavu 2>/dev/null
+xset fp rehash 2>/dev/null
+XINITRC_HEADER
+        if [ "$WM_COUNT" -eq 1 ]; then
+            wm_exec "$BARE_WMS_SELECTED"
+        else
+            echo "echo 'Select window manager:'"
+            IDX=1
+            for _wm in $BARE_WMS_SELECTED; do
+                echo "echo '  $IDX) $_wm'"
+                IDX=$(( IDX + 1 ))
+            done
+            echo "printf 'Choice: '"
+            echo "read -r _choice"
+            IDX=1
+            for _wm in $BARE_WMS_SELECTED; do
+                echo "[ "\$_choice" = "$IDX" ] && $(wm_exec $_wm)"
+                IDX=$(( IDX + 1 ))
+            done
+            wm_exec "$(echo "$BARE_WMS_SELECTED" | awk '{print $1}')"
+        fi
+    } > /mnt/home/"$USERNAME"/.xinitrc
+    chmod +x /mnt/home/"$USERNAME"/.xinitrc
+    chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.xinitrc
+fi
 
 if [ -n "$DM" ]; then
     if [[ "$DM" == "greetd" ]]; then
@@ -1369,6 +1275,8 @@ case "$BOOT" in
             sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /mnt/etc/default/grub
         fi
         artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+        # Unmount bind mounts used by os-prober
+        [ "$DUALBOOT" = "1" ] && { umount /mnt/sys /mnt/proc /mnt/dev 2>/dev/null || true; }
         ;;
     limine)
         artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
@@ -1412,6 +1320,100 @@ EOF
 esac
 
 # done
+
+gauge 95 "Extra packages..."
+# package picker — slackware style, pick what you want
+EXTRA_PKGS=$(whiptail --title "$TITLE" --checklist \
+    "Extra packages (space to toggle)" 34 65 24 \
+    "firefox"           "Firefox browser"                   OFF \
+    "chromium"          "Chromium browser"                  OFF \
+    "librewolf-bin"     "LibreWolf (AUR — privacy Firefox)"  OFF \
+    "thunderbird"       "Thunderbird email client"          OFF \
+    "steam"             "Steam"                             OFF \
+    "lutris"            "Lutris game manager"               OFF \
+    "wine"              "Wine (run Windows apps)"           OFF \
+    "kitty"             "Kitty terminal"                    OFF \
+    "alacritty"         "Alacritty terminal"                OFF \
+    "foot"              "Foot terminal (Wayland)"           OFF \
+    "nano"              "Nano editor"                       OFF \
+    "neovim"            "Neovim"                            OFF \
+    "vim"               "Vim"                               OFF \
+    "emacs"             "Emacs"                             OFF \
+    "git"               "Git"                               OFF \
+    "htop"              "htop"                              OFF \
+    "fastfetch"         "Fastfetch (system info)"           OFF \
+    "mpv"               "mpv media player"                  OFF \
+    "vlc"               "VLC media player"                  OFF \
+    "gimp"              "GIMP image editor"                 OFF \
+    "libreoffice-fresh" "LibreOffice"                       OFF \
+    "thunar"            "Thunar file manager"               OFF \
+    "nautilus"          "Nautilus file manager"             OFF \
+    "picom"             "Picom compositor"                  OFF \
+    "rofi"              "Rofi app launcher"                 OFF \
+    "dunst"             "Dunst notification daemon"         OFF \
+    "feh"               "Feh wallpaper/image viewer"        OFF \
+    "flameshot"         "Flameshot screenshot tool"         OFF \
+    "flatpak"           "Flatpak"                           OFF \
+    "discord"           "Discord"                           OFF \
+    "obsidian"          "Obsidian notes"                    OFF \
+    "code"              "VS Code (open-source build)"       OFF \
+    3>&1 1>&2 2>&3) || true
+
+EXTRA_PKGS=$(echo "$EXTRA_PKGS" | tr -d '"')
+
+# split out AUR helpers — they can't be installed via pacman
+AUR_HELPER=""
+AUR_HELPER=$(whiptail --title "$TITLE" --menu "AUR helper" 12 55 3 \
+    "none" "No AUR helper" \
+    "paru" "paru (Rust, recommended)" \
+    "yay"  "yay (Go)" \
+    3>&1 1>&2 2>&3) || AUR_HELPER="none"
+
+# install pacman packages first
+if [ -n "$EXTRA_PKGS" ]; then
+    # librewolf-bin is AUR-only — split it out and install via AUR helper later
+    PACMAN_PKGS=$(echo "$EXTRA_PKGS" | tr ' ' '\n' | grep -v '^librewolf' | tr '\n' ' ')
+    AUR_EXTRA=$(echo "$EXTRA_PKGS" | tr ' ' '\n' | grep '^librewolf' | tr '\n' ' ')
+    # flatpak needs flathub repo added after install
+    [ -n "$PACMAN_PKGS" ] && artix-chroot /mnt pacman -S --noconfirm $PACMAN_PKGS
+    if echo "$EXTRA_PKGS" | grep -qw "flatpak"; then
+        artix-chroot /mnt flatpak remote-add --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+    fi
+fi
+
+# install AUR-only extra packages if AUR helper selected
+if [ -n "${AUR_EXTRA:-}" ] && [ "$AUR_HELPER" != "none" ]; then
+    for _aur_pkg in $AUR_EXTRA; do
+        # _aur_pkg expands here (outer shell) before being passed to bash -c
+        artix-chroot /mnt bash -c "
+            cd /tmp
+            git clone https://aur.archlinux.org/${_aur_pkg}.git
+            chown -R ${USERNAME}:${USERNAME} /tmp/${_aur_pkg}
+            cd /tmp/${_aur_pkg}
+            sudo -u ${USERNAME} MAKEFLAGS='-j\$(nproc)' makepkg --noconfirm --needed -s
+            pacman -U --noconfirm /tmp/${_aur_pkg}/*.pkg.tar.zst
+            rm -rf /tmp/${_aur_pkg}
+        "
+    done
+elif [ -n "${AUR_EXTRA:-}" ]; then
+    echo "Note: librewolf-bin and other AUR packages skipped (no AUR helper selected)."
+fi
+
+# build AUR helper as user — needs base-devel + git
+if [ "$AUR_HELPER" != "none" ]; then
+    artix-chroot /mnt pacman -S --noconfirm git base-devel
+    artix-chroot /mnt bash -c "
+        cd /tmp
+        git clone https://aur.archlinux.org/${AUR_HELPER}.git
+        chown -R ${USERNAME}:${USERNAME} /tmp/${AUR_HELPER}
+        cd /tmp/${AUR_HELPER}
+        sudo -u ${USERNAME} MAKEFLAGS='-j\$(nproc)' makepkg --noconfirm --needed -s
+        pacman -U --noconfirm /tmp/${AUR_HELPER}/*.pkg.tar.zst
+        rm -rf /tmp/${AUR_HELPER}
+    "
+fi
+
 gauge 100 "Installation complete!"
 
 umount -R /mnt 2>/dev/null || true
