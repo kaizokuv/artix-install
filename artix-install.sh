@@ -1399,10 +1399,12 @@ AUR_HELPER=$(whiptail --title "$TITLE" --menu "AUR helper" 12 55 3 \
 # install pacman packages first
 if [ -n "$EXTRA_PKGS" ]; then
     # librewolf-bin is AUR-only — split it out and install via AUR helper later
-    PACMAN_PKGS=$(echo "$EXTRA_PKGS" | tr ' ' '\n' | grep -v '^librewolf' | tr '\n' ' ')
-    AUR_EXTRA=$(echo "$EXTRA_PKGS" | tr ' ' '\n' | grep '^librewolf' | tr '\n' ' ')
-    # flatpak needs flathub repo added after install
-    [ -n "$PACMAN_PKGS" ] && artix-chroot /mnt pacman -S --noconfirm $PACMAN_PKGS
+    PACMAN_PKGS=$(echo "$EXTRA_PKGS" | tr ' ' '\n' | grep -v '^librewolf' | grep -v '^$' | tr '\n' ' ' | xargs)
+    AUR_EXTRA=$(echo "$EXTRA_PKGS"   | tr ' ' '\n' | grep  '^librewolf'  | grep -v '^$' | tr '\n' ' ' | xargs)
+    # install non-AUR packages
+    if [ -n "$PACMAN_PKGS" ]; then
+        artix-chroot /mnt pacman -S --noconfirm --needed $PACMAN_PKGS
+    fi
     if echo "$EXTRA_PKGS" | grep -qw "flatpak"; then
         artix-chroot /mnt flatpak remote-add --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
