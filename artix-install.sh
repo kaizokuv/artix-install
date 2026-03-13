@@ -576,29 +576,32 @@ fi
 
 # cachyos repo — only needed for linux-cachyos kernel
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Download to /tmp first, then force-install with --nocheck
-    # (live ISO keyring is sparse; --nocheck is safe here — we verify with pacman-key --populate after)
     CACHY_KEY_URL='https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
     CACHY_MRL_URL='https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
-    if curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst "$CACHY_KEY_URL" \
-    && curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst "$CACHY_MRL_URL"; then
-        pacman -U --noconfirm --nocheck \
-            /tmp/cachyos-keyring.pkg.tar.zst \
-            /tmp/cachyos-mirrorlist.pkg.tar.zst
-        pacman-key --populate cachyos
+    _cachy_ok=0
+    # Disable set -e for this block — pacman-key/pacman can exit non-zero on key errors
+    # and we want to handle that ourselves with a whiptail fallback, not a silent crash
+    set +e
+    curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst "$CACHY_KEY_URL" \
+    && curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst "$CACHY_MRL_URL" \
+    && pacman -U --noconfirm --nocheck \
+        /tmp/cachyos-keyring.pkg.tar.zst \
+        /tmp/cachyos-mirrorlist.pkg.tar.zst \
+    && pacman-key --populate cachyos \
+    && _cachy_ok=1
+    set -e
+    if [ "$_cachy_ok" = "1" ]; then
         grep -q '\[cachyos\]' /etc/pacman.conf || \
             printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
         pacman -Sy --noconfirm
         if ! pacman -Si linux-cachyos &>/dev/null; then
-            whiptail --title "$TITLE" --msgbox \
-                "WARNING: CachyOS repo added but linux-cachyos not found.\nFalling back to linux kernel." 10 60
-            KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g')
-            FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+            _cachy_ok=0
         fi
-    else
+    fi
+    if [ "$_cachy_ok" = "0" ]; then
         whiptail --title "$TITLE" --msgbox \
-            "Could not download CachyOS packages.\nCheck network.\nFalling back to linux kernel." 10 60
-        KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g')
+            "CachyOS repo setup failed (key error or package not found).\nFalling back to linux kernel." 10 60
+        KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g' | tr -s ' ')
         FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
     fi
 fi
