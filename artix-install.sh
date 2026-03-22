@@ -59,8 +59,6 @@ if [ "${1:-}" = "--test" ]; then
     USE_XLIBRE=0; XORG_PKGS=""
     NET_CHOICE="NM"
     AUDIO_PKGS=""
-    EXTRA_PKGS="alacritty feh picom rofi"
-    AUR_HELPER="yay"
     # partition layout
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
@@ -75,11 +73,7 @@ if [ "${1:-}" = "--test" ]; then
         EFI=""; ROOT="${DISK}${P}1"
     fi
     DUALBOOT=0; SWAP_PART=""
-    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI"
-fi
-
-if [ "$TEST_MODE" = "0" ]; then
-whiptail --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
+    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI" --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
 fi
 
 # =========================
@@ -115,6 +109,8 @@ pick() {
 # =========================
 # INIT SYSTEM
 # =========================
+RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+
 if [ "$TEST_MODE" = "0" ]; then
 INIT=$(whiptail --title "$TITLE" --menu "Init System" 12 60 2 \
     "dinit"  "dinit  -- fast, dependency-based (recommended)" \
@@ -147,7 +143,6 @@ SWAP=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
     "None"     "No swap" \
     3>&1 1>&2 2>&3) || exit 1
 
-RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
 (( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
@@ -275,7 +270,6 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
         DE_CHOICES="CLI"
     fi
 
-    # extras vars unused — package picker at end handles extra software
 fi
 
 # =========================
@@ -634,31 +628,45 @@ fi
 
 # cachyos repo — only needed for linux-cachyos kernel
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    CACHY_KEY_URL='https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
-    CACHY_MRL_URL='https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
     _cachy_ok=0
-    # Disable set -e for this block — pacman-key/pacman can exit non-zero on key errors
-    # and we want to handle that ourselves with a whiptail fallback, not a silent crash
-    set +e
-    curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst "$CACHY_KEY_URL" \
-    && curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst "$CACHY_MRL_URL" \
-    && pacman -U --noconfirm --nocheck \
-        /tmp/cachyos-keyring.pkg.tar.zst \
-        /tmp/cachyos-mirrorlist.pkg.tar.zst \
-    && pacman-key --populate cachyos \
-    && _cachy_ok=1
-    set -e
-    if [ "$_cachy_ok" = "1" ]; then
+    set +e  # handle errors ourselves — pacman-key exits non-zero on various warnings
+
+    # Step 1: resolve current package filenames dynamically from the repo db
+    # (hardcoding the date in the filename breaks when CachyOS releases a new keyring)
+    CACHY_BASE='https://mirror.cachyos.org/repo/x86_64/cachyos'
+    _cachy_keyring_pkg=$(curl -fsSL --retry 3 "${CACHY_BASE}/" 2>/dev/null \
+        | grep -o 'cachyos-keyring[^"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
+    _cachy_mirrorlist_pkg=$(curl -fsSL --retry 3 "${CACHY_BASE}/" 2>/dev/null \
+        | grep -o 'cachyos-mirrorlist[^"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
+
+    if [ -n "$_cachy_keyring_pkg" ] && [ -n "$_cachy_mirrorlist_pkg" ]; then
+        curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \
+            "${CACHY_BASE}/${_cachy_keyring_pkg}"
+        curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst \
+            "${CACHY_BASE}/${_cachy_mirrorlist_pkg}"
+
+        # Step 2: temporarily drop SigLevel so pacman -U works even if live ISO
+        # keyring doesn't know CachyOS yet — we establish trust via pacman-key after
+        _orig_siglevel=$(grep '^SigLevel' /etc/pacman.conf || echo 'SigLevel = Required DatabaseOptional')
+        sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
+
+        pacman -U --noconfirm \
+            /tmp/cachyos-keyring.pkg.tar.zst \
+            /tmp/cachyos-mirrorlist.pkg.tar.zst
+
+        # Step 3: restore SigLevel and populate keyring properly
+        sed -i "s/^SigLevel.*/${_orig_siglevel}/" /etc/pacman.conf
+        pacman-key --populate cachyos
+
         grep -q '\[cachyos\]' /etc/pacman.conf || \
             printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
-        pacman -Sy --noconfirm
-        if ! pacman -Si linux-cachyos &>/dev/null; then
-            _cachy_ok=0
-        fi
+        pacman -Sy --noconfirm && pacman -Si linux-cachyos &>/dev/null && _cachy_ok=1
     fi
+
+    set -e
     if [ "$_cachy_ok" = "0" ]; then
         whiptail --title "$TITLE" --msgbox \
-            "CachyOS repo setup failed (key error or package not found).\nFalling back to linux kernel." 10 60
+            "CachyOS repo setup failed.\nFalling back to linux kernel." 10 60
         KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g' | tr -s ' ')
         FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
     fi
@@ -725,20 +733,25 @@ fi
 
 # cachyos repo in the installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Reuse packages already downloaded to live ISO /tmp — avoids a second download
+    # Reuse packages already downloaded during live ISO setup — no re-download needed
     if [ -f /tmp/cachyos-keyring.pkg.tar.zst ] && [ -f /tmp/cachyos-mirrorlist.pkg.tar.zst ]; then
         cp /tmp/cachyos-keyring.pkg.tar.zst /tmp/cachyos-mirrorlist.pkg.tar.zst /mnt/tmp/
     else
+        # Shouldn't happen (live setup already ran) but handle gracefully
         artix-chroot /mnt bash -c "
-            curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \
-                'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
-            curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst \
-                'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+            CACHY_BASE='https://mirror.cachyos.org/repo/x86_64/cachyos'
+            _pkg=\$(curl -fsSL --retry 3 \"\${CACHY_BASE}/\" | grep -o 'cachyos-keyring[^\"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
+            curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \"\${CACHY_BASE}/\${_pkg}\"
+            _pkg=\$(curl -fsSL --retry 3 \"\${CACHY_BASE}/\" | grep -o 'cachyos-mirrorlist[^\"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
+            curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst \"\${CACHY_BASE}/\${_pkg}\"
         "
     fi
-    artix-chroot /mnt pacman -U --noconfirm --nocheck \
+    _orig_siglevel=$(grep '^SigLevel' /mnt/etc/pacman.conf || echo 'SigLevel = Required DatabaseOptional')
+    sed -i 's/^SigLevel.*/SigLevel = Never/' /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman -U --noconfirm \
         /tmp/cachyos-keyring.pkg.tar.zst \
         /tmp/cachyos-mirrorlist.pkg.tar.zst
+    sed -i "s/^SigLevel.*/${_orig_siglevel}/" /mnt/etc/pacman.conf
     artix-chroot /mnt pacman-key --populate cachyos
     grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
@@ -1037,9 +1050,10 @@ for DE in $DE_CHOICES; do
             # xmonad/xmonad-contrib live in Arch's [extra], not Artix repos
             # Enable Arch repos via artix-archlinux-support first
             artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
-            grep -q '\[extra\]' /mnt/etc/pacman.conf || \
-                printf '\n# Arch repos (needed for xmonad)\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' \
-                >> /mnt/etc/pacman.conf
+            if ! grep -q '\[extra\]' /mnt/etc/pacman.conf; then
+                printf '\n# Arch repos\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' >> /mnt/etc/pacman.conf
+                artix-chroot /mnt pacman-key --populate archlinux
+            fi
             artix-chroot /mnt pacman -Sy --noconfirm
             artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib git
             # Clone dotfiles into ~/.config
@@ -1402,115 +1416,6 @@ EOF
         ;;
 esac
 
-# done
-
-gauge 95 "Extra packages..."
-# Ensure Arch [extra] repo is available — many common packages (alacritty, rofi,
-# picom, feh, discord, obsidian, etc.) live there, not in Artix's own repos
-if ! grep -q '\[extra\]' /mnt/etc/pacman.conf; then
-    artix-chroot /mnt pacman -S --noconfirm --needed artix-archlinux-support
-    printf '
-# Arch repos
-[extra]
-Include = /etc/pacman.d/mirrorlist-arch
-[community]
-Include = /etc/pacman.d/mirrorlist-arch
-[multilib]
-Include = /etc/pacman.d/mirrorlist-arch
-' >> /mnt/etc/pacman.conf
-    artix-chroot /mnt pacman -Sy --noconfirm
-fi
-
-# package picker — slackware style, pick what you want
-if [ "$TEST_MODE" = "0" ]; then
-EXTRA_PKGS=$(whiptail --title "$TITLE" --checklist \
-    "Extra packages (space to toggle)" 34 65 24 \
-    "firefox"           "Firefox browser"                   OFF \
-    "chromium"          "Chromium browser"                  OFF \
-    "librewolf-bin"     "LibreWolf (AUR — privacy Firefox)"  OFF \
-    "thunderbird"       "Thunderbird email client"          OFF \
-    "steam"             "Steam"                             OFF \
-    "lutris"            "Lutris game manager"               OFF \
-    "wine"              "Wine (run Windows apps)"           OFF \
-    "kitty"             "Kitty terminal"                    OFF \
-    "alacritty"         "Alacritty terminal"                OFF \
-    "foot"              "Foot terminal (Wayland)"           OFF \
-    "nano"              "Nano editor"                       OFF \
-    "neovim"            "Neovim"                            OFF \
-    "vim"               "Vim"                               OFF \
-    "emacs"             "Emacs"                             OFF \
-    "git"               "Git"                               OFF \
-    "htop"              "htop"                              OFF \
-    "fastfetch"         "Fastfetch (system info)"           OFF \
-    "mpv"               "mpv media player"                  OFF \
-    "vlc"               "VLC media player"                  OFF \
-    "gimp"              "GIMP image editor"                 OFF \
-    "libreoffice-fresh" "LibreOffice"                       OFF \
-    "thunar"            "Thunar file manager"               OFF \
-    "nautilus"          "Nautilus file manager"             OFF \
-    "picom"             "Picom compositor"                  OFF \
-    "rofi"              "Rofi app launcher"                 OFF \
-    "dunst"             "Dunst notification daemon"         OFF \
-    "feh"               "Feh wallpaper/image viewer"        OFF \
-    "flameshot"         "Flameshot screenshot tool"         OFF \
-    "flatpak"           "Flatpak"                           OFF \
-    "discord"           "Discord"                           OFF \
-    "obsidian"          "Obsidian notes"                    OFF \
-    "code"              "VS Code (open-source build)"       OFF \
-    3>&1 1>&2 2>&3) || true
-
-EXTRA_PKGS=$(echo "$EXTRA_PKGS" | tr -d '"')
-
-# split out AUR helpers — they can't be installed via pacman
-AUR_HELPER=""
-AUR_HELPER=$(whiptail --title "$TITLE" --menu "AUR helper" 12 55 3 \
-    "none" "No AUR helper" \
-    "paru" "paru (Rust, recommended)" \
-    "yay"  "yay (Go)" \
-    3>&1 1>&2 2>&3) || AUR_HELPER="none"
-fi  # end TEST_MODE=0 extras Q&A
-
-# install pacman packages first
-if [ -n "$EXTRA_PKGS" ]; then
-    # librewolf-bin is AUR-only — split it out and install via AUR helper later
-    PACMAN_PKGS=$(echo "$EXTRA_PKGS" | tr ' ' '\n' | grep -v '^librewolf' | grep -v '^$' | tr '\n' ' ' | xargs)
-    AUR_EXTRA=$(echo "$EXTRA_PKGS"   | tr ' ' '\n' | grep  '^librewolf'  | grep -v '^$' | tr '\n' ' ' | xargs)
-    # install non-AUR packages
-    if [ -n "$PACMAN_PKGS" ]; then
-        artix-chroot /mnt pacman -S --noconfirm --needed $PACMAN_PKGS
-    fi
-    if echo "$EXTRA_PKGS" | grep -qw "flatpak"; then
-        artix-chroot /mnt flatpak remote-add --if-not-exists flathub \
-            https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
-    fi
-fi
-
-# install AUR-only extra packages if AUR helper selected
-if [ -n "${AUR_EXTRA:-}" ] && [ "$AUR_HELPER" != "none" ]; then
-    for _aur_pkg in $AUR_EXTRA; do
-        artix-chroot /mnt bash -c "
-            git clone https://aur.archlinux.org/${_aur_pkg}.git /tmp/${_aur_pkg}
-            chown -R ${USERNAME}:${USERNAME} /tmp/${_aur_pkg}
-            sudo -u ${USERNAME} bash -c 'cd /tmp/${_aur_pkg} && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s'
-            pacman -U --noconfirm /tmp/${_aur_pkg}/*.pkg.tar.zst
-            rm -rf /tmp/${_aur_pkg}
-        "
-    done
-elif [ -n "${AUR_EXTRA:-}" ]; then
-    echo "Note: librewolf-bin and other AUR packages skipped (no AUR helper selected)."
-fi
-
-# build AUR helper as user — needs base-devel + git
-if [ "$AUR_HELPER" != "none" ]; then
-    artix-chroot /mnt pacman -S --noconfirm git base-devel
-    artix-chroot /mnt bash -c "
-        git clone https://aur.archlinux.org/${AUR_HELPER}.git /tmp/${AUR_HELPER}
-        chown -R ${USERNAME}:${USERNAME} /tmp/${AUR_HELPER}
-        sudo -u ${USERNAME} bash -c 'cd /tmp/${AUR_HELPER} && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s'
-        pacman -U --noconfirm /tmp/${AUR_HELPER}/*.pkg.tar.zst
-        rm -rf /tmp/${AUR_HELPER}
-    "
-fi
 
 gauge 100 "Installation complete!"
 
