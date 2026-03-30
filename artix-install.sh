@@ -90,20 +90,7 @@ get_password() {
     done
 }
 
-pick() {
-    local title="$1" cmd="$2"
-    local filter result
-    while true; do
-        filter=$(whiptail --title "$TITLE" --inputbox "$title — type to filter:" 10 60 "" 3>&1 1>&2 2>&3) || exit 1
-        mapfile -t list < <(eval "$cmd" | grep -i "$filter" | head -50)
-        [ ${#list[@]} -eq 0 ] && whiptail --title "$TITLE" --msgbox "No matches, try again." 8 40 && continue
-        args=()
-        for i in "${list[@]}"; do args+=("$i" "$i"); done
-        result=$(whiptail --title "$TITLE" --menu "$title" 20 70 12 "${args[@]}" 3>&1 1>&2 2>&3) || continue
-        echo "$result"
-        return
-    done
-}
+# no pick() helper needed — using curated menus instead
 
 # =========================
 # =========================
@@ -180,8 +167,68 @@ fi
 # =========================
 # LOCALE / TIMEZONE / KEYBOARD
 # =========================
-LOCALE=$(pick "Locale" "grep UTF-8 /usr/share/i18n/SUPPORTED | awk '{print \$1}'")
-TIMEZONE=$(pick "Timezone" "awk '/^[^#]/{print \$3}' /usr/share/zoneinfo/zone.tab | sort")
+LOCALE=$(whiptail --title "$TITLE" --menu "Locale" 20 60 12 \
+    "en_US.UTF-8" "English (US)" \
+    "en_GB.UTF-8" "English (UK)" \
+    "en_AU.UTF-8" "English (Australia)" \
+    "en_CA.UTF-8" "English (Canada)" \
+    "de_DE.UTF-8" "German" \
+    "fr_FR.UTF-8" "French" \
+    "es_ES.UTF-8" "Spanish" \
+    "it_IT.UTF-8" "Italian" \
+    "pt_BR.UTF-8" "Portuguese (Brazil)" \
+    "pt_PT.UTF-8" "Portuguese (Portugal)" \
+    "ru_RU.UTF-8" "Russian" \
+    "pl_PL.UTF-8" "Polish" \
+    "nl_NL.UTF-8" "Dutch" \
+    "sv_SE.UTF-8" "Swedish" \
+    "nb_NO.UTF-8" "Norwegian" \
+    "da_DK.UTF-8" "Danish" \
+    "fi_FI.UTF-8" "Finnish" \
+    "hu_HU.UTF-8" "Hungarian" \
+    "cs_CZ.UTF-8" "Czech" \
+    "sk_SK.UTF-8" "Slovak" \
+    "hr_HR.UTF-8" "Croatian" \
+    "ro_RO.UTF-8" "Romanian" \
+    "uk_UA.UTF-8" "Ukrainian" \
+    "tr_TR.UTF-8" "Turkish" \
+    "ja_JP.UTF-8" "Japanese" \
+    "ko_KR.UTF-8" "Korean" \
+    "zh_CN.UTF-8" "Chinese (Simplified)" \
+    3>&1 1>&2 2>&3) || exit 1
+
+TIMEZONE=$(whiptail --title "$TITLE" --menu "Timezone" 20 60 12 \
+    "Europe/London"     "UK" \
+    "Europe/Dublin"     "Ireland" \
+    "Europe/Paris"      "France / Central Europe" \
+    "Europe/Berlin"     "Germany" \
+    "Europe/Amsterdam"  "Netherlands" \
+    "Europe/Madrid"     "Spain" \
+    "Europe/Rome"       "Italy" \
+    "Europe/Warsaw"     "Poland" \
+    "Europe/Stockholm"  "Sweden" \
+    "Europe/Oslo"       "Norway" \
+    "Europe/Copenhagen" "Denmark" \
+    "Europe/Helsinki"   "Finland" \
+    "Europe/Budapest"   "Hungary" \
+    "Europe/Prague"     "Czech Republic" \
+    "Europe/Bratislava" "Slovakia" \
+    "Europe/Zagreb"     "Croatia" \
+    "Europe/Bucharest"  "Romania" \
+    "Europe/Kiev"       "Ukraine" \
+    "Europe/Istanbul"   "Turkey" \
+    "Europe/Moscow"     "Russia (Moscow)" \
+    "America/New_York"  "US Eastern" \
+    "America/Chicago"   "US Central" \
+    "America/Denver"    "US Mountain" \
+    "America/Los_Angeles" "US Pacific" \
+    "America/Toronto"   "Canada Eastern" \
+    "America/Sao_Paulo" "Brazil" \
+    "Asia/Tokyo"        "Japan" \
+    "Asia/Seoul"        "Korea" \
+    "Asia/Shanghai"     "China" \
+    "Australia/Sydney"  "Australia Eastern" \
+    3>&1 1>&2 2>&3) || exit 1
 
 KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 40 74 15 \
     "us"        "English (US)" \
@@ -353,142 +400,71 @@ fi  # end TEST_MODE=0 Q&A
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
-PART_DEVS=()
-PART_SIZES=()
-PART_TYPES=()
 DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
-EFI=""
-ROOT=""
-DUALBOOT=0
+EFI=""; ROOT=""; DUALBOOT=0
+[[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
 
-while true; do
-    TABLE=""
-    for i in "${!PART_DEVS[@]}"; do
-        TABLE+="${PART_DEVS[$i]}|${PART_SIZES[$i]}GB|${PART_TYPES[$i]}  "
-    done
-    [ -z "$TABLE" ] && TABLE="(no partitions defined yet)"
+PART_MODE=$(whiptail --title "$TITLE" --menu \
+    "Partitioning — $DISK (${DISK_SIZE_GB}GB)" 13 65 3 \
+    "auto"     "Auto — wipe disk, use entire drive (recommended)" \
+    "manual"   "Manual — open cfdisk to partition yourself" \
+    "dualboot" "Dual-boot — keep existing partitions, pick root" \
+    3>&1 1>&2 2>&3) || exit 1
 
-    [ "$UEFI" = "1" ] && _AUTO_DESC="Auto layout — 1GB EFI + rest as root (wipes disk)" \
-                      || _AUTO_DESC="Auto layout — full disk as root (wipes disk)"
-    MENU_ARGS=(
-        "auto"     "$_AUTO_DESC"
-        "add"      "Add partition"
-        "delete"   "Delete last partition"
-        "clear"    "Clear all partitions"
-        "done"     "Write and continue"
-    )
-    [ "$UEFI" = "1" ] && MENU_ARGS+=( "dualboot" "Dual-boot — use existing EFI + pick root" )
-
-    ACTION=$(whiptail --title "$TITLE" --menu \
-        "Disk: $DISK (${DISK_SIZE_GB}GB)   Layout: $TABLE" \
-        20 76 7 \
-        "${MENU_ARGS[@]}" \
-        3>&1 1>&2 2>&3) || continue
-
-    case "$ACTION" in
-        auto)
-            PART_DEVS=()
-            PART_SIZES=()
-            PART_TYPES=()
-            DUALBOOT=0
-            [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
-            if [ "$UEFI" = "1" ]; then
-                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
-                PART_SIZES=( "1" "0" )
-                PART_TYPES=( "EFI" "root" )
-            else
-                PART_DEVS=( "${DISK}${P}1" )
-                PART_SIZES=( "0" )
-                PART_TYPES=( "root" )
-            fi
-            ;;
-        dualboot)
-            DUALBOOT=1
-            PART_DEVS=()
-            PART_SIZES=()
-            PART_TYPES=()
-            # Show all partitions on all disks for EFI selection
-            mapfile -t allparts < <(lsblk -pno NAME,SIZE,FSTYPE,PARTTYPE | \
-                grep -v '^/dev/[a-z]*[[:space:]]' | \
-                awk '{print $1; printf "%s %s %s\n", $2, ($3=="" ? "unformatted" : $3), ($4=="" ? "" : "[EFI]")}')
-            EFI=$(whiptail --title "$TITLE" --menu \
-                "Dual-boot: Select existing EFI partition\n(This is your Windows/existing ESP — do NOT format it)" \
-                18 72 10 "${allparts[@]}" 3>&1 1>&2 2>&3) || continue
-            # Show free/unformatted partitions for root
-            mapfile -t rootparts < <(lsblk -pno NAME,SIZE,FSTYPE "$DISK" | \
-                grep -v "^$DISK " | \
-                awk '{print $1; printf "%s %s\n", $2, ($3=="" ? "unformatted" : $3)}')
-            ROOT=$(whiptail --title "$TITLE" --menu \
-                "Dual-boot: Select partition for Artix root\n(This will be formatted as $FS)" \
-                18 72 10 "${rootparts[@]}" 3>&1 1>&2 2>&3) || continue
-            whiptail --title "$TITLE" --msgbox \
-                "Dual-boot configured:\n\n  EFI  : $EFI  (will NOT be formatted)\n  Root : $ROOT (will be formatted as $FS)\n\nArtix bootloader entry will be added to the existing ESP.\nos-prober will detect your other OS automatically." \
-                14 65
-            break
-            ;;
-        add)
-            PSIZE=$(whiptail --title "$TITLE" --inputbox \
-                "Partition size in GB\n(0 = fill remaining space on disk)" \
-                10 55 "" 3>&1 1>&2 2>&3) || continue
-            PTYPE=$(whiptail --title "$TITLE" --menu "Partition type" 12 45 4 \
-                "EFI"  "EFI System Partition (UEFI only)" \
-                "root" "Root filesystem" \
-                "swap" "Swap partition" \
-                "data" "Extra data partition" \
-                3>&1 1>&2 2>&3) || continue
-            if [ "$PTYPE" = "EFI" ] && [ "$UEFI" = "0" ]; then
-                whiptail --title "$TITLE" --msgbox "EFI partitions are not used on BIOS systems." 8 52
-                continue
-            fi
-            PIDX=$(( ${#PART_DEVS[@]} + 1 ))
-            [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
-            PART_DEVS+=( "${DISK}${P}${PIDX}" )
-            PART_SIZES+=( "$PSIZE" )
-            PART_TYPES+=( "$PTYPE" )
-            ;;
-        delete)
-            if [ ${#PART_DEVS[@]} -gt 0 ]; then
-                unset 'PART_DEVS[-1]'
-                unset 'PART_SIZES[-1]'
-                unset 'PART_TYPES[-1]'
-            fi
-            ;;
-        clear)
-            PART_DEVS=()
-            PART_SIZES=()
-            PART_TYPES=()
-            DUALBOOT=0
-            ;;
-        done)
-            [ "$DUALBOOT" = "1" ] && break
-            EFI_COUNT=0; ROOT_COUNT=0
-            for t in "${PART_TYPES[@]}"; do
-                [ "$t" = "EFI" ]  && EFI_COUNT=$(( EFI_COUNT + 1 ))
-                [ "$t" = "root" ] && ROOT_COUNT=$(( ROOT_COUNT + 1 ))
-            done
-            if [ "$UEFI" = "1" ] && [ "$EFI_COUNT" -ne 1 ]; then
-                whiptail --title "$TITLE" --msgbox \
-                    "UEFI requires exactly one EFI partition.\nCurrent: ${EFI_COUNT}x EFI." 8 55
-                continue
-            fi
-            if [ "$ROOT_COUNT" -ne 1 ]; then
-                whiptail --title "$TITLE" --msgbox \
-                    "You need exactly one root partition.\nCurrent: ${ROOT_COUNT}x root." 8 55
-                continue
-            fi
-            for i in "${!PART_TYPES[@]}"; do
-                [ "${PART_TYPES[$i]}" = "EFI" ]  && EFI="${PART_DEVS[$i]}"
-                [ "${PART_TYPES[$i]}" = "root" ] && ROOT="${PART_DEVS[$i]}"
-            done
-            break
-            ;;
-    esac
-done
-
+case "$PART_MODE" in
+    auto)
+        if [ "$UEFI" = "1" ]; then
+            PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+            PART_SIZES=( "1" "0" )
+            PART_TYPES=( "EFI" "root" )
+            EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+        else
+            PART_DEVS=( "${DISK}${P}1" )
+            PART_SIZES=( "0" )
+            PART_TYPES=( "root" )
+            ROOT="${DISK}${P}1"
+        fi
+        ;;
+    manual)
+        whiptail --title "$TITLE" --msgbox \
+            "cfdisk will open now.\n\nCreate your partitions and write the table.\nAfter exiting you will select which partitions to use." \
+            10 60
+        cfdisk "$DISK"
+        udevadm settle
+        # Let user pick root (and EFI if UEFI)
+        mapfile -t _parts < <(lsblk -pno NAME,SIZE,FSTYPE "$DISK" | grep -v "^$DISK " | \
+            awk '{print $1; printf "%s %s\n", $2, ($3=="" ? "unformatted" : $3)}')
+        if [ "$UEFI" = "1" ]; then
+            EFI=$(whiptail --title "$TITLE" --menu "Select EFI partition" \
+                16 60 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        fi
+        ROOT=$(whiptail --title "$TITLE" --menu "Select root partition (will be formatted as $FS)" \
+            16 60 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        PART_DEVS=(); PART_SIZES=(); PART_TYPES=()
+        [ "$UEFI" = "1" ] && { PART_DEVS+=("$EFI"); PART_SIZES+=("0"); PART_TYPES+=("EFI"); }
+        PART_DEVS+=("$ROOT"); PART_SIZES+=("0"); PART_TYPES+=("root")
+        ;;
+    dualboot)
+        DUALBOOT=1
+        mapfile -t allparts < <(lsblk -pno NAME,SIZE,FSTYPE,PARTTYPE | \
+            grep -v '^/dev/[a-z]*[[:space:]]' | \
+            awk '{print $1; printf "%s %s %s\n", $2, ($3=="" ? "unformatted" : $3), ($4=="" ? "" : "[EFI]")}')
+        EFI=$(whiptail --title "$TITLE" --menu \
+            "Select your existing EFI partition (do NOT format it)" \
+            18 72 10 "${allparts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        mapfile -t rootparts < <(lsblk -pno NAME,SIZE,FSTYPE "$DISK" | \
+            grep -v "^$DISK " | \
+            awk '{print $1; printf "%s %s\n", $2, ($3=="" ? "unformatted" : $3)}')
+        ROOT=$(whiptail --title "$TITLE" --menu \
+            "Select partition for Artix root (will be formatted as $FS)" \
+            18 72 10 "${rootparts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        PART_DEVS=("$ROOT"); PART_SIZES=("0"); PART_TYPES=("root")
+        ;;
+esac
 fi  # end TEST_MODE=0 partition manager
 
-if [ "$DUALBOOT" = "0" ]; then
+if [ "$DUALBOOT" = "0" ] && [ "${PART_MODE:-auto}" != "manual" ]; then
     # Fresh install — wipe and write new partition table via sfdisk
     wipefs -af "$DISK"
     {
@@ -529,7 +505,7 @@ if [ "$DUALBOOT" = "0" ]; then
         fi
     done
 else
-    # Dual-boot — never touch EFI, only format root
+    # Dual-boot or manual — partition table already written, just settle
     udevadm settle
     SWAP_PART=""
 fi
@@ -629,45 +605,36 @@ fi
 # cachyos repo — only needed for linux-cachyos kernel
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     _cachy_ok=0
-    set +e  # handle errors ourselves — pacman-key exits non-zero on various warnings
+    set +e
 
-    # Step 1: resolve current package filenames dynamically from the repo db
-    # Pull filenames from the repo .db (a tar of desc files) — more reliable than scraping HTML
     CACHY_BASE='https://mirror.cachyos.org/repo/x86_64/cachyos'
-    curl -fsSL --retry 3 -o /tmp/cachyos.db "${CACHY_BASE}/cachyos.db"
-    _cachy_keyring_pkg=$(tar -xOf /tmp/cachyos.db --wildcards '*/desc' 2>/dev/null \
-        | awk '/%FILENAME%/{getline; if (/cachyos-keyring/) print}' | tail -1)
-    _cachy_mirrorlist_pkg=$(tar -xOf /tmp/cachyos.db --wildcards '*/desc' 2>/dev/null \
-        | awk '/%FILENAME%/{getline; if (/cachyos-mirrorlist/) print}' | tail -1)
 
-    if [ -n "$_cachy_keyring_pkg" ] && [ -n "$_cachy_mirrorlist_pkg" ]; then
-        curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \
-            "${CACHY_BASE}/${_cachy_keyring_pkg}"
-        curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst \
-            "${CACHY_BASE}/${_cachy_mirrorlist_pkg}"
+    # Add repo with SigLevel=Never temporarily so we can install the keyring
+    # without needing keys we don't have yet
+    grep -q '\[cachyos\]' /etc/pacman.conf || cat >> /etc/pacman.conf << 'EOF'
 
-        # Step 2: temporarily drop SigLevel so pacman -U works even if live ISO
-        # keyring doesn't know CachyOS yet — we establish trust via pacman-key after
-        _orig_siglevel=$(grep '^SigLevel' /etc/pacman.conf || echo 'SigLevel = Required DatabaseOptional')
-        sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
+[cachyos]
+Server = https://mirror.cachyos.org/repo/x86_64/cachyos
+SigLevel = Never
+EOF
 
-        pacman -U --noconfirm \
-            /tmp/cachyos-keyring.pkg.tar.zst \
-            /tmp/cachyos-mirrorlist.pkg.tar.zst
+    pacman -Sy --noconfirm 2>/dev/null
+    pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist
 
-        # Step 3: restore SigLevel and populate keyring properly
-        sed -i "s/^SigLevel.*/${_orig_siglevel}/" /etc/pacman.conf
-        pacman-key --populate cachyos
+    # Now that the keyring is installed, switch to proper sig checking
+    sed -i '/^\[cachyos\]/,/^SigLevel = Never/{ s/^SigLevel = Never/SigLevel = Required DatabaseOptional/ }' /etc/pacman.conf
+    # Update mirrorlist include
+    sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /etc/pacman.conf
 
-        grep -q '\[cachyos\]' /etc/pacman.conf || \
-            printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
-        pacman -Sy --noconfirm && pacman -Si linux-cachyos &>/dev/null && _cachy_ok=1
-    fi
+    pacman-key --populate cachyos
+    pacman -Sy --noconfirm && pacman -Si linux-cachyos &>/dev/null && _cachy_ok=1
 
     set -e
     if [ "$_cachy_ok" = "0" ]; then
         whiptail --title "$TITLE" --msgbox \
             "CachyOS repo setup failed.\nFalling back to linux kernel." 10 60
+        # Remove the cachyos repo block we added
+        sed -i '/^\[cachyos\]/,/^$/d' /etc/pacman.conf
         KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g' | tr -s ' ')
         FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
     fi
@@ -734,28 +701,17 @@ fi
 
 # cachyos repo in the installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Reuse packages already downloaded during live ISO setup — no re-download needed
-    if [ -f /tmp/cachyos-keyring.pkg.tar.zst ] && [ -f /tmp/cachyos-mirrorlist.pkg.tar.zst ]; then
-        cp /tmp/cachyos-keyring.pkg.tar.zst /tmp/cachyos-mirrorlist.pkg.tar.zst /mnt/tmp/
-    else
-        # Shouldn't happen (live setup already ran) but handle gracefully
-        artix-chroot /mnt bash -c "
-            CACHY_BASE='https://mirror.cachyos.org/repo/x86_64/cachyos'
-            _pkg=\$(curl -fsSL --retry 3 \"\${CACHY_BASE}/\" | grep -o 'cachyos-keyring[^\"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
-            curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \"\${CACHY_BASE}/\${_pkg}\"
-            _pkg=\$(curl -fsSL --retry 3 \"\${CACHY_BASE}/\" | grep -o 'cachyos-mirrorlist[^\"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
-            curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst \"\${CACHY_BASE}/\${_pkg}\"
-        "
-    fi
-    _orig_siglevel=$(grep '^SigLevel' /mnt/etc/pacman.conf || echo 'SigLevel = Required DatabaseOptional')
-    sed -i 's/^SigLevel.*/SigLevel = Never/' /mnt/etc/pacman.conf
-    artix-chroot /mnt pacman -U --noconfirm \
-        /tmp/cachyos-keyring.pkg.tar.zst \
-        /tmp/cachyos-mirrorlist.pkg.tar.zst
-    sed -i "s/^SigLevel.*/${_orig_siglevel}/" /mnt/etc/pacman.conf
+    grep -q '\[cachyos\]' /mnt/etc/pacman.conf || cat >> /mnt/etc/pacman.conf << 'EOF'
+
+[cachyos]
+Server = https://mirror.cachyos.org/repo/x86_64/cachyos
+SigLevel = Never
+EOF
+    artix-chroot /mnt pacman -Sy --noconfirm
+    artix-chroot /mnt pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist
+    sed -i '/^\[cachyos\]/,/^SigLevel = Never/{ s/^SigLevel = Never/SigLevel = Required DatabaseOptional/ }' /mnt/etc/pacman.conf
+    sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /mnt/etc/pacman.conf
     artix-chroot /mnt pacman-key --populate cachyos
-    grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
-        printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm
 fi
 
