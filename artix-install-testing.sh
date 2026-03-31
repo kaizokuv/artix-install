@@ -617,15 +617,24 @@ gauge 20 "Installing base system (this takes a while)..."
 # =========================
 # BASESTRAP
 # =========================
-basestrap /mnt \
-    base "$FIRST_KERNEL" linux-firmware $UCODE \
-    $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
-    $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
-    $([ "$PRIV_ESC" = "sudo" ] && echo "sudo" || echo "doas") $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
-    ttf-dejavu ttf-liberation noto-fonts \
-    $XORG_PKGS \
-    $AUDIO_PKGS \
-    $GPU
+_do_basestrap() {
+    local _k="$1"
+    basestrap /mnt \
+        base base-devel "$_k" linux-firmware $UCODE \
+        $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
+        $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
+        $([ "$PRIV_ESC" = "sudo" ] && echo "sudo" || echo "doas") $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
+        ttf-dejavu ttf-liberation noto-fonts \
+        $XORG_PKGS \
+        $AUDIO_PKGS \
+        $GPU
+}
+if ! _do_basestrap "$FIRST_KERNEL"; then
+    echo "==> $FIRST_KERNEL failed, falling back to linux"
+    FIRST_KERNEL="linux"
+    KERNEL_CHOICES="linux"
+    _do_basestrap linux
+fi
 
 gauge 35 "Writing fstab..."
 fstabgen -U /mnt >> /mnt/etc/fstab
@@ -702,15 +711,15 @@ if [ "$NET_CHOICE" = "NM" ] && [ -d /etc/NetworkManager/system-connections ]; th
     chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
 fi
 
-# Extra kernels
+# Extra kernels — skip silently if they fail
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
     if [ "$K" = "linux-cachyos" ]; then
-        artix-chroot /mnt pacman -S --noconfirm linux-cachyos
+        artix-chroot /mnt pacman -S --noconfirm linux-cachyos || echo "==> Warning: linux-cachyos failed, skipping"
     elif [ "$K" = "linux-lqx" ]; then
-        artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers
+        artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers || echo "==> Warning: linux-lqx failed, skipping"
     else
-        artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
+        artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers" || echo "==> Warning: $K failed, skipping"
     fi
 done
 
@@ -762,24 +771,33 @@ USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
 # privilege escalation config
+if [ "$PRIV_ESC" = "sudo" ]; then
+    _sudo_ok=0
+    if [ -f /mnt/etc/sudoers ]; then
+        sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
+        sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
+        grep -q '%wheel.*ALL' /mnt/etc/sudoers && _sudo_ok=1
+    else
+        mkdir -p /mnt/etc/sudoers.d
+        echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
+        chmod 0440 /mnt/etc/sudoers.d/wheel
+        _sudo_ok=1
+    fi
+    if [ "$_sudo_ok" = "0" ]; then
+        echo "==> Warning: sudo config failed, falling back to doas"
+        PRIV_ESC="doas"
+    fi
+fi
+# doas — either as primary choice or fallback
 if [ "$PRIV_ESC" = "doas" ]; then
+    # ensure doas is installed (may have been skipped if sudo was chosen initially)
+    [ ! -f /mnt/usr/bin/doas ] && artix-chroot /mnt pacman -S --noconfirm doas 2>/dev/null || true
     cat > /mnt/etc/doas.conf << 'EOF'
 permit persist :wheel
 permit nopass :wheel cmd pacman
 EOF
     chmod 0400 /mnt/etc/doas.conf
-    # symlink sudo -> doas so tools that hardcode sudo still work
     [ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
-else
-    # sudo — configure sudoers
-    if [ -f /mnt/etc/sudoers ]; then
-        sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
-        sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
-    else
-        mkdir -p /mnt/etc/sudoers.d
-        echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
-        chmod 0440 /mnt/etc/sudoers.d/wheel
-    fi
 fi
 
 # xdg dirs — create standard dirs directly, avoids chroot session issues
@@ -948,7 +966,9 @@ else
     DM=""
 fi
 
+_failed_des=""
 for DE in $DE_CHOICES; do
+    _de_ok=1
     case "$DE" in
         Plasma)
             artix-chroot /mnt pacman -S --noconfirm \
@@ -957,18 +977,18 @@ for DE in $DE_CHOICES; do
                 breeze breeze-gtk knotifications \
                 polkit-kde-agent xdg-desktop-portal-kde \
                 dolphin konsole spectacle ark gwenview \
-                plasma-systemmonitor ksystemstats bluedevil
+                plasma-systemmonitor ksystemstats bluedevil || _de_ok=0
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
                 xfce4 xfce4-goodies xdg-desktop-portal-gtk \
-                pavucontrol thunar-archive-plugin
+                pavucontrol thunar-archive-plugin || _de_ok=0
             ;;
         LXQt)
-            artix-chroot /mnt pacman -S --noconfirm lxqt
+            artix-chroot /mnt pacman -S --noconfirm lxqt || _de_ok=0
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm || _de_ok=0
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
@@ -977,8 +997,8 @@ for DE in $DE_CHOICES; do
                 artix-chroot /mnt pacman-key --populate archlinux
             fi
             artix-chroot /mnt pacman -Sy --noconfirm
-            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xterm dmenu git
-            artix-chroot /mnt bash -c "
+            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xterm dmenu git || { _de_ok=0; }
+            [ "$_de_ok" = "1" ] && artix-chroot /mnt bash -c "
                 mkdir -p /home/$USERNAME/.config
                 git clone https://github.com/feribsd/xmonad-dotfiles.git /tmp/xmonad-dotfiles
                 cp -r /tmp/xmonad-dotfiles/. /home/$USERNAME/.config/
@@ -987,33 +1007,35 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Openbox)
-            artix-chroot /mnt pacman -S --noconfirm openbox xterm dmenu
+            artix-chroot /mnt pacman -S --noconfirm openbox xterm dmenu || _de_ok=0
             ;;
         Fluxbox)
-            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm dmenu
+            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm dmenu || _de_ok=0
             ;;
         IceWM)
-            artix-chroot /mnt pacman -S --noconfirm icewm xterm
+            artix-chroot /mnt pacman -S --noconfirm icewm xterm || _de_ok=0
             mkdir -p /mnt/home/"$USERNAME"/.config/icewm
             ;;
         Hyprland)
-            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland
-            mkdir -p /mnt/home/"$USERNAME"/.config/hypr
-            cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
+            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland || { _de_ok=0; }
+            if [ "$_de_ok" = "1" ]; then
+                mkdir -p /mnt/home/"$USERNAME"/.config/hypr
+                cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
 exec-once = /usr/local/bin/start-pipewire
 HYPREOF
-            chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
-            mkdir -p /mnt/usr/share/wayland-sessions
-            cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
+                chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
+                mkdir -p /mnt/usr/share/wayland-sessions
+                cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
 [Desktop Entry]
 Name=Hyprland
 Comment=A dynamic tiling Wayland compositor
 Exec=Hyprland
 Type=Application
 EOF
+            fi
             ;;
         Moksha)
-            artix-chroot /mnt pacman -S --noconfirm moksha-artix
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix || _de_ok=0
             ;;
         Cosmic)
             artix-chroot /mnt bash -c "
@@ -1025,7 +1047,7 @@ EOF
                 $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc") \
                 xdg-desktop-portal-cosmic cosmic-terminal \
                 cosmic-files cosmic-text-editor cosmic-settings \
-                cosmic-screenshot cosmic-store upower pavucontrol
+                cosmic-screenshot cosmic-store upower pavucontrol || _de_ok=0
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
@@ -1058,7 +1080,10 @@ user = "cosmic-greeter"
 EOF
             ;;
     esac
+    [ "$_de_ok" = "0" ] && _failed_des="$_failed_des $DE"
 done
+
+[ -n "$_failed_des" ] && echo "==> Warning: failed to install:$_failed_des — install manually after boot"
 
 # write .xinitrc for bare WMs — done after loop so all WMs are installed
 BARE_WMS_SELECTED=""
@@ -1090,18 +1115,16 @@ XINITRC_HEADER
         if [ "$WM_COUNT" -eq 1 ]; then
             wm_exec "$BARE_WMS_SELECTED"
         else
-            echo "echo 'Select window manager:'"
-            IDX=1
+            # generate a whiptail picker that runs at login
+            printf 'WMLIST=('
+            for _wm in $BARE_WMS_SELECTED; do printf '"%s" "" ' "$_wm"; done
+            printf ')\n'
+            cat << 'WMPICKER'
+_wm_choice=$(whiptail --title "Window Manager" --menu "Select WM to launch:" 15 50 8 "${WMLIST[@]}" 3>&1 1>&2 2>&3)
+[ -z "$_wm_choice" ] && _wm_choice="${WMLIST[0]}"
+WMPICKER
             for _wm in $BARE_WMS_SELECTED; do
-                echo "echo '  $IDX) $_wm'"
-                IDX=$(( IDX + 1 ))
-            done
-            echo "printf 'Choice: '"
-            echo "read -r _choice"
-            IDX=1
-            for _wm in $BARE_WMS_SELECTED; do
-                echo "[ "\$_choice" = "$IDX" ] && $(wm_exec $_wm)"
-                IDX=$(( IDX + 1 ))
+                echo "[ \"\$_wm_choice\" = \"$_wm\" ] && $(wm_exec $_wm)"
             done
             wm_exec "$(echo "$BARE_WMS_SELECTED" | awk '{print $1}')"
         fi
