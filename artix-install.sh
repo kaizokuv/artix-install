@@ -59,6 +59,7 @@ if [ "${1:-}" = "--test" ]; then
     USE_XLIBRE=0; XORG_PKGS=""
     NET_CHOICE="NM"
     AUDIO_PKGS=""
+    PRIV_ESC="doas"
     # partition layout
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
@@ -99,303 +100,273 @@ get_password() {
 RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 
 if [ "$TEST_MODE" = "0" ]; then
-INIT=$(whiptail --title "$TITLE" --menu "Init System" 12 60 2 \
-    "dinit"  "dinit  -- fast, dependency-based (recommended)" \
-    "openrc" "openrc -- traditional, widely supported" \
-    3>&1 1>&2 2>&3) || exit 1
 
-# DISK
-# =========================
-mapfile -t disklist < <(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1; print $2}')
-DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
-    "${disklist[@]}" 3>&1 1>&2 2>&3) || exit 1
+# Step-based Q&A with back navigation
+# Each step sets variables; pressing Cancel goes back one step
+STEP=1
+STEP_MAX=12
 
-# =========================
-# FILESYSTEM
-# =========================
-FS=$(whiptail --title "$TITLE" --menu "Root Filesystem" 15 60 4 \
-    "ext4"  "Ext4 (recommended)" \
-    "btrfs" "Btrfs" \
-    "xfs"   "XFS" \
-    "f2fs"  "F2FS (flash-friendly)" \
-    3>&1 1>&2 2>&3) || exit 1
-
-# =========================
-# SWAP
-# =========================
-SWAP=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
-    "Zram"     "zram (compressed RAM swap)" \
-    "Swapfile" "Swapfile on disk" \
-    "Both"     "Zram + Swapfile" \
-    "None"     "No swap" \
-    3>&1 1>&2 2>&3) || exit 1
+# defaults (overwritten by each step)
+INIT="dinit"
+DISK=""
+FS="ext4"
+SWAP="None"
+SWAP_SIZE_GB=4
+SWAP_SIZE_MB=4096
+ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""; LUKS_PW=""
+LOCALE="en_US.UTF-8"
+TIMEZONE="Europe/London"
+KB_LAYOUT="us"
+HOSTNAME="artix"
+USERNAME="user"
+ROOTPW=""; USERPW=""
+INSTALL_TYPE="CLI"; DE_CHOICES="CLI"
+KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
+CPU_VENDOR="amd"; UCODE="amd-ucode"
+GPU_CHOICE="vm"; GPU="mesa"
+BOOT="grub"
+USE_XLIBRE=0
+NET_CHOICE="NM"
+PRIV_ESC="doas"
 
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
 (( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
 
-SWAP_SIZE_MB=4096
-SWAP_SIZE_GB=4
-if [[ "$SWAP" =~ Swapfile|Both ]]; then
-    SWAP_MENU_ARGS=()
-    for SZ in 1 2 4 8 16; do
-        if (( SZ == RAM_HALF_GB )); then
-            SWAP_MENU_ARGS+=("$SZ" "${SZ} GB  <- recommended")
-        else
-            SWAP_MENU_ARGS+=("$SZ" "${SZ} GB")
-        fi
-    done
-    SWAP_SIZE_GB=$(whiptail --title "$TITLE" --menu "Swapfile Size" 15 70 5 \
-        "${SWAP_MENU_ARGS[@]}" 3>&1 1>&2 2>&3) || exit 1
-    SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
-fi
+while true; do
+case "$STEP" in
 
-# =========================
-# ENCRYPTION
-# =========================
-ENCRYPT=0
-REAL_ROOT=""
-LUKS_CMDLINE=""
-if whiptail --title "$TITLE" --yesno "Enable full disk encryption (LUKS2)?
-
-You will be prompted for a passphrase.
-You must enter it on every boot." 12 60; then
-    ENCRYPT=1
-    LUKS_PW=$(get_password "Encryption Passphrase")
-fi
-
-# =========================
-# LOCALE / TIMEZONE / KEYBOARD
-# =========================
-LOCALE=$(whiptail --title "$TITLE" --menu "Locale" 20 60 12 \
-    "en_US.UTF-8" "English (US)" \
-    "en_GB.UTF-8" "English (UK)" \
-    "en_AU.UTF-8" "English (Australia)" \
-    "en_CA.UTF-8" "English (Canada)" \
-    "de_DE.UTF-8" "German" \
-    "fr_FR.UTF-8" "French" \
-    "es_ES.UTF-8" "Spanish" \
-    "it_IT.UTF-8" "Italian" \
-    "pt_BR.UTF-8" "Portuguese (Brazil)" \
-    "pt_PT.UTF-8" "Portuguese (Portugal)" \
-    "ru_RU.UTF-8" "Russian" \
-    "pl_PL.UTF-8" "Polish" \
-    "nl_NL.UTF-8" "Dutch" \
-    "sv_SE.UTF-8" "Swedish" \
-    "nb_NO.UTF-8" "Norwegian" \
-    "da_DK.UTF-8" "Danish" \
-    "fi_FI.UTF-8" "Finnish" \
-    "hu_HU.UTF-8" "Hungarian" \
-    "cs_CZ.UTF-8" "Czech" \
-    "sk_SK.UTF-8" "Slovak" \
-    "hr_HR.UTF-8" "Croatian" \
-    "ro_RO.UTF-8" "Romanian" \
-    "uk_UA.UTF-8" "Ukrainian" \
-    "tr_TR.UTF-8" "Turkish" \
-    "ja_JP.UTF-8" "Japanese" \
-    "ko_KR.UTF-8" "Korean" \
-    "zh_CN.UTF-8" "Chinese (Simplified)" \
-    3>&1 1>&2 2>&3) || exit 1
-
-TIMEZONE=$(whiptail --title "$TITLE" --menu "Timezone" 20 60 12 \
-    "Europe/London"     "UK" \
-    "Europe/Dublin"     "Ireland" \
-    "Europe/Paris"      "France / Central Europe" \
-    "Europe/Berlin"     "Germany" \
-    "Europe/Amsterdam"  "Netherlands" \
-    "Europe/Madrid"     "Spain" \
-    "Europe/Rome"       "Italy" \
-    "Europe/Warsaw"     "Poland" \
-    "Europe/Stockholm"  "Sweden" \
-    "Europe/Oslo"       "Norway" \
-    "Europe/Copenhagen" "Denmark" \
-    "Europe/Helsinki"   "Finland" \
-    "Europe/Budapest"   "Hungary" \
-    "Europe/Prague"     "Czech Republic" \
-    "Europe/Bratislava" "Slovakia" \
-    "Europe/Zagreb"     "Croatia" \
-    "Europe/Bucharest"  "Romania" \
-    "Europe/Kiev"       "Ukraine" \
-    "Europe/Istanbul"   "Turkey" \
-    "Europe/Moscow"     "Russia (Moscow)" \
-    "America/New_York"  "US Eastern" \
-    "America/Chicago"   "US Central" \
-    "America/Denver"    "US Mountain" \
-    "America/Los_Angeles" "US Pacific" \
-    "America/Toronto"   "Canada Eastern" \
-    "America/Sao_Paulo" "Brazil" \
-    "Asia/Tokyo"        "Japan" \
-    "Asia/Seoul"        "Korea" \
-    "Asia/Shanghai"     "China" \
-    "Australia/Sydney"  "Australia Eastern" \
-    3>&1 1>&2 2>&3) || exit 1
-
-KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 40 74 15 \
-    "us"        "English (US)" \
-    "gb"        "English (UK)" \
-    "us-intl"   "English (US International)" \
-    "de"        "German" \
-    "de-latin1" "German (Latin-1)" \
-    "fr"        "French" \
-    "fr-bepo"   "French (Bepo)" \
-    "es"        "Spanish" \
-    "it"        "Italian" \
-    "pt"        "Portuguese" \
-    "br"        "Portuguese (Brazil)" \
-    "br-abnt2"  "Portuguese (Brazil ABNT2)" \
-    "ru"        "Russian" \
-    "pl"        "Polish" \
-    "nl"        "Dutch" \
-    "sv"        "Swedish" \
-    "no"        "Norwegian" \
-    "dk"        "Danish" \
-    "fi"        "Finnish" \
-    "hu"        "Hungarian" \
-    "cz"        "Czech" \
-    "cz-qwerty" "Czech (QWERTY)" \
-    "sk"        "Slovak" \
-    "hr"        "Croatian" \
-    "ro"        "Romanian" \
-    "bg"        "Bulgarian" \
-    "gr"        "Greek" \
-    "tr"        "Turkish" \
-    "ua"        "Ukrainian" \
-    "lt"        "Lithuanian" \
-    "lv"        "Latvian" \
-    "et"        "Estonian" \
-    "il"        "Hebrew" \
-    "ar"        "Arabic" \
-    "jp106"     "Japanese (106 key)" \
-    "kr"        "Korean" \
-    "dvorak"    "Dvorak" \
-    "colemak"   "Colemak" \
-    3>&1 1>&2 2>&3) || exit 1
-
-# =========================
-# HOSTNAME / USER
-# =========================
-HOSTNAME=""
-while [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9\-]+$ ]]; do
-    HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Hostname" 10 60 "artix" 3>&1 1>&2 2>&3) || exit 1
-done
-
-USERNAME=""
-while [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_\-]*$ ]]; do
-    USERNAME=$(whiptail --title "$TITLE" --inputbox "Username" 10 60 "user" 3>&1 1>&2 2>&3) || exit 1
-done
-
-ROOTPW=$(get_password "Root Password")
-USERPW=$(get_password "User Password")
-
-# =========================
-# DESKTOP
-# =========================
-INSTALL_TYPE=$(whiptail --title "$TITLE" --menu "Installation Type" 12 60 2 \
-    "DE"  "Desktop Environment / Window Manager" \
-    "CLI" "CLI only" \
-    3>&1 1>&2 2>&3) || exit 1
-
-DE_CHOICES="CLI"
-if [ "$INSTALL_TYPE" = "DE" ]; then
-    DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
-        "Select DE/WM (space to toggle, enter to confirm)" 28 70 12 \
-        "Plasma"   "KDE Plasma"               OFF \
-        "XFCE"     "XFCE4"                    OFF \
-        "LXQt"     "LXQt"                     OFF \
-        "i3"       "i3wm"                     OFF \
-        "XMonad"   "XMonad"                   OFF \
-        "Openbox"  "Openbox"                  OFF \
-        "Fluxbox"  "Fluxbox"                  OFF \
-        "IceWM"    "IceWM"                    OFF \
-        "Hyprland" "Hyprland (Wayland)"       OFF \
-        "Moksha"   "Moksha"                   OFF \
-        "Cosmic"   "COSMIC [EXPERIMENTAL]"    OFF \
+1) # Init system
+    _v=$(whiptail --title "$TITLE" --menu "Init System  [1/$STEP_MAX]" 12 60 2 \
+        "dinit"  "dinit  — fast, dependency-based (recommended)" \
+        "openrc" "openrc — traditional, widely supported" \
         3>&1 1>&2 2>&3) || exit 1
-    DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
-    if [ -z "$DE_CHOICES" ]; then
-        whiptail --title "$TITLE" --msgbox "Nothing selected, defaulting to CLI." 8 50
-        DE_CHOICES="CLI"
+    INIT="$_v"; STEP=$(( STEP + 1 )) ;;
+
+2) # Disk
+    mapfile -t disklist < <(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1; print $2}')
+    _v=$(whiptail --title "$TITLE" --menu "Select Disk  [2/$STEP_MAX]" 20 70 10 \
+        "${disklist[@]}" 3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    DISK="$_v"; STEP=$(( STEP + 1 )) ;;
+
+3) # Filesystem
+    _v=$(whiptail --title "$TITLE" --menu "Root Filesystem  [3/$STEP_MAX]" 12 60 4 \
+        "ext4"  "Ext4 (recommended)" \
+        "btrfs" "Btrfs" \
+        "xfs"   "XFS" \
+        "f2fs"  "F2FS (flash-friendly)" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    FS="$_v"; STEP=$(( STEP + 1 )) ;;
+
+4) # Swap
+    _v=$(whiptail --title "$TITLE" --menu "Swap  [4/$STEP_MAX]" 12 60 4 \
+        "Zram"     "zram (compressed RAM swap)" \
+        "Swapfile" "Swapfile on disk" \
+        "Both"     "Zram + Swapfile" \
+        "None"     "No swap" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    SWAP="$_v"
+    if [[ "$SWAP" =~ Swapfile|Both ]]; then
+        SWAP_MENU_ARGS=()
+        for SZ in 1 2 4 8 16; do
+            (( SZ == RAM_HALF_GB )) \
+                && SWAP_MENU_ARGS+=("$SZ" "${SZ}GB  <- recommended") \
+                || SWAP_MENU_ARGS+=("$SZ" "${SZ}GB")
+        done
+        _v=$(whiptail --title "$TITLE" --menu "Swapfile Size  [4/$STEP_MAX]" 13 60 5 \
+            "${SWAP_MENU_ARGS[@]}" 3>&1 1>&2 2>&3) || continue
+        SWAP_SIZE_GB="$_v"; SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
     fi
+    STEP=$(( STEP + 1 )) ;;
 
-fi
-
-# =========================
-# KERNEL
-# =========================
-KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select kernel(s)" 20 70 5 \
-    "linux"         "Standard"                                        ON  \
-    "linux-lts"     "LTS — long term support"                         OFF \
-    "linux-zen"     "Zen — desktop optimised"                         OFF \
-    "linux-lqx"     "Liquorix — low latency + MuQSS scheduler"        OFF \
-    "linux-cachyos" "CachyOS — BORE scheduler + perf (adds CachyOS repo)" OFF \
-    3>&1 1>&2 2>&3) || exit 1
-KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
-[ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
-FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
-
-# cpu microcode + gpu drivers
-CPU_VENDOR=$(whiptail --title "$TITLE" --menu "CPU vendor" 10 50 3 \
-    "intel" "Intel" \
-    "amd"   "AMD" \
-    "other" "Other / VM" \
-    3>&1 1>&2 2>&3) || exit 1
-
-case "$CPU_VENDOR" in
-    intel) UCODE="intel-ucode" ;;
-    amd)   UCODE="amd-ucode" ;;
-    *)     UCODE="" ;;
-esac
-
-GPU_CHOICE=$(whiptail --title "$TITLE" --menu "GPU / graphics" 14 60 5 \
-    "intel"  "Intel iGPU (mesa + vulkan-intel)" \
-    "amd"    "AMD (mesa + vulkan-radeon)" \
-    "nvidia" "Nvidia (mesa + nvidia + nvidia-utils)" \
-    "hybrid" "Hybrid Intel+Nvidia (mesa + both)" \
-    "vm"     "VM / none (mesa only)" \
-    3>&1 1>&2 2>&3) || exit 1
-
-case "$GPU_CHOICE" in
-    intel)  GPU="mesa vulkan-intel" ;;
-    amd)    GPU="mesa vulkan-radeon" ;;
-    nvidia) GPU="mesa nvidia nvidia-utils" ;;
-    hybrid) GPU="mesa vulkan-intel nvidia nvidia-utils" ;;
-    vm)     GPU="mesa" ;;
-esac
-
-# bootloader
-if [ "$UEFI" = "1" ]; then
-    BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
-        "grub"   "GRUB2 (most compatible, required for dual-boot)" \
-        "limine" "Limine (fast, minimal)" \
-        "refind" "rEFInd (graphical)" \
-        3>&1 1>&2 2>&3) || exit 1
-else
-    BOOT="grub"  # BIOS systems only support GRUB
-fi
-
-# =========================
-# XLIBRE / XORG
-# =========================
-USE_XLIBRE=0
-if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+5) # Encryption
     if whiptail --title "$TITLE" --yesno \
-        "Use XLibre instead of Xorg?\n\nXLibre is Artix's actively maintained Xorg fork.\nFeatures: TearFree by default, cleaner codebase.\nInstalled from the galaxy-gremlins repo.\n\nRecommended for bare WMs. Choose No for standard Xorg." \
-        14 60; then
-        USE_XLIBRE=1
+        "Encryption  [5/$STEP_MAX]\n\nEnable full disk encryption (LUKS2)?\nYou will enter a passphrase on every boot." \
+        10 60; then
+        ENCRYPT=1
+        LUKS_PW=$(get_password "Encryption Passphrase")
+    else
+        ENCRYPT=0; LUKS_PW=""
     fi
-fi
+    STEP=$(( STEP + 1 )) ;;
 
-# =========================
-# NETWORK STACK
-# =========================
-NET_CHOICE=$(whiptail --title "$TITLE" --menu \
-    "Network Stack\n\nNetworkManager is heavy (~30MB).\nLighter options save significant RAM at idle." \
-    15 65 3 \
-    "dhcpcd" "dhcpcd  -- ethernet only, ~2MB" \
-    "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
-    "NM"     "NetworkManager -- full featured, ~30MB" \
-    3>&1 1>&2 2>&3) || NET_CHOICE="NM"
+6) # Locale + Timezone + Keyboard (one screen each, all in step 6 — back returns to step 5)
+    _v=$(whiptail --title "$TITLE" --menu "Locale  [6/$STEP_MAX]" 20 60 12 \
+        "en_US.UTF-8" "English (US)"            "en_GB.UTF-8" "English (UK)" \
+        "en_AU.UTF-8" "English (Australia)"     "en_CA.UTF-8" "English (Canada)" \
+        "de_DE.UTF-8" "German"                  "fr_FR.UTF-8" "French" \
+        "es_ES.UTF-8" "Spanish"                 "it_IT.UTF-8" "Italian" \
+        "pt_BR.UTF-8" "Portuguese (Brazil)"     "pt_PT.UTF-8" "Portuguese (Portugal)" \
+        "ru_RU.UTF-8" "Russian"                 "pl_PL.UTF-8" "Polish" \
+        "nl_NL.UTF-8" "Dutch"                   "sv_SE.UTF-8" "Swedish" \
+        "nb_NO.UTF-8" "Norwegian"               "da_DK.UTF-8" "Danish" \
+        "fi_FI.UTF-8" "Finnish"                 "hu_HU.UTF-8" "Hungarian" \
+        "cs_CZ.UTF-8" "Czech"                   "sk_SK.UTF-8" "Slovak" \
+        "hr_HR.UTF-8" "Croatian"                "ro_RO.UTF-8" "Romanian" \
+        "uk_UA.UTF-8" "Ukrainian"               "tr_TR.UTF-8" "Turkish" \
+        "ja_JP.UTF-8" "Japanese"                "ko_KR.UTF-8" "Korean" \
+        "zh_CN.UTF-8" "Chinese (Simplified)" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    LOCALE="$_v"
+    _v=$(whiptail --title "$TITLE" --menu "Timezone  [6/$STEP_MAX]" 20 62 12 \
+        "Europe/London"      "UK"                 "Europe/Dublin"     "Ireland" \
+        "Europe/Paris"       "France/CET"         "Europe/Berlin"     "Germany" \
+        "Europe/Amsterdam"   "Netherlands"        "Europe/Madrid"     "Spain" \
+        "Europe/Rome"        "Italy"              "Europe/Warsaw"     "Poland" \
+        "Europe/Stockholm"   "Sweden"             "Europe/Oslo"       "Norway" \
+        "Europe/Copenhagen"  "Denmark"            "Europe/Helsinki"   "Finland" \
+        "Europe/Budapest"    "Hungary"            "Europe/Prague"     "Czech Republic" \
+        "Europe/Bratislava"  "Slovakia"           "Europe/Zagreb"     "Croatia" \
+        "Europe/Bucharest"   "Romania"            "Europe/Kiev"       "Ukraine" \
+        "Europe/Istanbul"    "Turkey"             "Europe/Moscow"     "Russia" \
+        "America/New_York"   "US Eastern"         "America/Chicago"   "US Central" \
+        "America/Denver"     "US Mountain"        "America/Los_Angeles" "US Pacific" \
+        "America/Toronto"    "Canada Eastern"     "America/Sao_Paulo" "Brazil" \
+        "Asia/Tokyo"         "Japan"              "Asia/Seoul"        "Korea" \
+        "Asia/Shanghai"      "China"              "Australia/Sydney"  "Australia" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    TIMEZONE="$_v"
+    _v=$(whiptail --title "$TITLE" --menu "Keyboard Layout  [6/$STEP_MAX]" 20 60 12 \
+        "us" "English (US)"        "gb" "English (UK)" \
+        "us-intl" "English (Intl)" "de" "German" \
+        "de-latin1" "German (L1)"  "fr" "French" \
+        "fr-bepo" "French (Bepo)"  "es" "Spanish" \
+        "it" "Italian"             "pt" "Portuguese" \
+        "br" "Portuguese (BR)"     "br-abnt2" "Portuguese (ABNT2)" \
+        "ru" "Russian"             "pl" "Polish" \
+        "nl" "Dutch"               "sv" "Swedish" \
+        "no" "Norwegian"           "dk" "Danish" \
+        "fi" "Finnish"             "hu" "Hungarian" \
+        "cz" "Czech"               "cz-qwerty" "Czech (QWERTY)" \
+        "sk" "Slovak"              "hr" "Croatian" \
+        "ro" "Romanian"            "bg" "Bulgarian" \
+        "gr" "Greek"               "tr" "Turkish" \
+        "ua" "Ukrainian"           "dvorak" "Dvorak" \
+        "colemak" "Colemak" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    KB_LAYOUT="$_v"
+    STEP=$(( STEP + 1 )) ;;
+
+7) # Hostname + username
+    _v=$(whiptail --title "$TITLE" --inputbox "Hostname  [7/$STEP_MAX]" 10 60 "${HOSTNAME:-artix}" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    [[ "$_v" =~ ^[a-zA-Z0-9\-]+$ ]] && HOSTNAME="$_v" || \
+        { whiptail --title "$TITLE" --msgbox "Invalid hostname. Use letters, numbers, hyphens only." 8 50; continue; }
+    _v=$(whiptail --title "$TITLE" --inputbox "Username  [7/$STEP_MAX]" 10 60 "${USERNAME:-user}" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    [[ "$_v" =~ ^[a-z][a-z0-9_\-]*$ ]] && USERNAME="$_v" || \
+        { whiptail --title "$TITLE" --msgbox "Invalid username. Use lowercase letters, numbers, _ or -." 8 55; continue; }
+    ROOTPW=$(get_password "Root Password  [7/$STEP_MAX]")
+    USERPW=$(get_password "User Password  [7/$STEP_MAX]")
+    STEP=$(( STEP + 1 )) ;;
+
+8) # Privilege escalation
+    _v=$(whiptail --title "$TITLE" --menu "Privilege Escalation  [8/$STEP_MAX]" 12 60 2 \
+        "doas"  "doas  — minimal, OpenBSD-style (recommended)" \
+        "sudo"  "sudo  — standard, widely compatible" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    PRIV_ESC="$_v"; STEP=$(( STEP + 1 )) ;;
+
+9) # Desktop
+    _v=$(whiptail --title "$TITLE" --menu "Installation Type  [9/$STEP_MAX]" 10 60 2 \
+        "DE"  "Desktop Environment / Window Manager" \
+        "CLI" "CLI only" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    INSTALL_TYPE="$_v"
+    DE_CHOICES="CLI"
+    if [ "$INSTALL_TYPE" = "DE" ]; then
+        DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
+            "Select DE/WM  [9/$STEP_MAX]  (space=toggle)" 20 70 11 \
+            "Plasma"   "KDE Plasma"              OFF \
+            "XFCE"     "XFCE4"                   OFF \
+            "LXQt"     "LXQt"                    OFF \
+            "i3"       "i3wm"                    OFF \
+            "XMonad"   "XMonad"                  OFF \
+            "Openbox"  "Openbox"                 OFF \
+            "Fluxbox"  "Fluxbox"                 OFF \
+            "IceWM"    "IceWM"                   OFF \
+            "Hyprland" "Hyprland (Wayland)"      OFF \
+            "Moksha"   "Moksha"                  OFF \
+            "Cosmic"   "COSMIC [EXPERIMENTAL]"   OFF \
+            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+        DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
+        [ -z "$DE_CHOICES" ] && DE_CHOICES="CLI"
+    fi
+    STEP=$(( STEP + 1 )) ;;
+
+10) # Kernel + CPU + GPU
+    KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
+        "Kernel  [10/$STEP_MAX]" 14 70 5 \
+        "linux"         "Standard"                                    ON  \
+        "linux-lts"     "LTS — long term support"                     OFF \
+        "linux-zen"     "Zen — desktop optimised"                     OFF \
+        "linux-lqx"     "Liquorix — low latency"                      OFF \
+        "linux-cachyos" "CachyOS — BORE scheduler (adds CachyOS repo)" OFF \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
+    [ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
+    FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+    _v=$(whiptail --title "$TITLE" --menu "CPU Vendor  [10/$STEP_MAX]" 10 50 3 \
+        "intel" "Intel" "amd" "AMD" "other" "Other / VM" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    CPU_VENDOR="$_v"
+    case "$CPU_VENDOR" in
+        intel) UCODE="intel-ucode" ;; amd) UCODE="amd-ucode" ;; *) UCODE="" ;;
+    esac
+    _v=$(whiptail --title "$TITLE" --menu "GPU  [10/$STEP_MAX]" 13 60 5 \
+        "intel"  "Intel iGPU" \
+        "amd"    "AMD" \
+        "nvidia" "Nvidia" \
+        "hybrid" "Hybrid Intel+Nvidia" \
+        "vm"     "VM / none (mesa only)" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    GPU_CHOICE="$_v"
+    case "$GPU_CHOICE" in
+        intel)  GPU="mesa vulkan-intel" ;;
+        amd)    GPU="mesa vulkan-radeon" ;;
+        nvidia) GPU="mesa nvidia nvidia-utils" ;;
+        hybrid) GPU="mesa vulkan-intel nvidia nvidia-utils" ;;
+        vm)     GPU="mesa" ;;
+    esac
+    STEP=$(( STEP + 1 )) ;;
+
+11) # Bootloader
+    if [ "$UEFI" = "1" ]; then
+        _v=$(whiptail --title "$TITLE" --menu "Bootloader  [11/$STEP_MAX]" 12 65 3 \
+            "grub"   "GRUB2 — most compatible, required for dual-boot" \
+            "limine" "Limine — fast, minimal" \
+            "refind" "rEFInd — graphical" \
+            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+        BOOT="$_v"
+    else
+        BOOT="grub"
+    fi
+    STEP=$(( STEP + 1 )) ;;
+
+12) # Xorg + Network
+    USE_XLIBRE=0
+    if [ "$DE_CHOICES" != "CLI" ] && \
+       ! echo "$DE_CHOICES" | grep -qw "Cosmic" && \
+       ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+        if whiptail --title "$TITLE" --yesno \
+            "XLibre or Xorg?  [12/$STEP_MAX]\n\nXLibre is Artix's actively maintained Xorg fork.\nTearFree by default, from galaxy-gremlins repo.\n\nYes = XLibre   No = standard Xorg" \
+            12 60; then
+            USE_XLIBRE=1
+        fi
+    fi
+    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [12/$STEP_MAX]" 13 65 3 \
+        "dhcpcd" "dhcpcd  — ethernet only, ~2MB" \
+        "iwd"    "iwd     — wifi + ethernet, ~5MB" \
+        "NM"     "NetworkManager — full featured, ~30MB" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    NET_CHOICE="$_v"
+    STEP=$(( STEP + 1 )) ;;
+
+esac
+[ "$STEP" -gt "$STEP_MAX" ] && break
+[ "$STEP" -lt 1 ] && STEP=1
+done
+
 fi  # end TEST_MODE=0 Q&A
 
 # partition manager
@@ -607,34 +578,36 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     _cachy_ok=0
     set +e
 
-    CACHY_BASE='https://mirror.cachyos.org/repo/x86_64/cachyos'
+    # Temporarily set global SigLevel = Never so pacman can install the keyring
+    # package before we have CachyOS keys trusted. Per-repo SigLevel is unreliable
+    # across pacman versions — global override is the only thing that always works.
+    _orig_siglevel=$(grep '^SigLevel' /etc/pacman.conf | head -1)
+    [ -z "$_orig_siglevel" ] && _orig_siglevel="SigLevel = Required DatabaseOptional"
+    sed -i "s/^SigLevel.*/${_orig_siglevel}/" /etc/pacman.conf  # ensure it exists first
+    sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
 
-    # Add repo with SigLevel=Never temporarily so we can install the keyring
-    # without needing keys we don't have yet
-    grep -q '\[cachyos\]' /etc/pacman.conf || cat >> /etc/pacman.conf << 'EOF'
-
-[cachyos]
-Server = https://mirror.cachyos.org/repo/x86_64/cachyos
-SigLevel = Never
-EOF
+    # Add the repo (with a plain Server line, no per-repo SigLevel needed now)
+    grep -q '\[cachyos\]' /etc/pacman.conf || printf '\n[cachyos]\nServer = https://mirror.cachyos.org/repo/x86_64/cachyos\n' >> /etc/pacman.conf
 
     pacman -Sy --noconfirm 2>/dev/null
     pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist
 
-    # Now that the keyring is installed, switch to proper sig checking
-    sed -i '/^\[cachyos\]/,/^SigLevel = Never/{ s/^SigLevel = Never/SigLevel = Required DatabaseOptional/ }' /etc/pacman.conf
-    # Update mirrorlist include
+    # Restore global SigLevel and populate the keyring properly
+    sed -i "s/^SigLevel.*/${_orig_siglevel}/" /etc/pacman.conf
+    pacman-key --populate cachyos
+
+    # Switch repo to use mirrorlist include now that mirrorlist is installed
     sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /etc/pacman.conf
 
-    pacman-key --populate cachyos
     pacman -Sy --noconfirm && pacman -Si linux-cachyos &>/dev/null && _cachy_ok=1
 
     set -e
     if [ "$_cachy_ok" = "0" ]; then
+        # Restore original SigLevel in case it got left as Never
+        sed -i "s/^SigLevel.*/${_orig_siglevel}/" /etc/pacman.conf
+        sed -i '/^\[cachyos\]/,/^$/d' /etc/pacman.conf
         whiptail --title "$TITLE" --msgbox \
             "CachyOS repo setup failed.\nFalling back to linux kernel." 10 60
-        # Remove the cachyos repo block we added
-        sed -i '/^\[cachyos\]/,/^$/d' /etc/pacman.conf
         KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g' | tr -s ' ')
         FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
     fi
@@ -648,7 +621,8 @@ basestrap /mnt \
     base "$FIRST_KERNEL" linux-firmware $UCODE \
     $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
     $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
-    doas $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
+    $([ "$PRIV_ESC" = "sudo" ] && echo "sudo" || echo "doas") $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
+    ttf-dejavu ttf-liberation noto-fonts \
     $XORG_PKGS \
     $AUDIO_PKGS \
     $GPU
@@ -701,17 +675,16 @@ fi
 
 # cachyos repo in the installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    grep -q '\[cachyos\]' /mnt/etc/pacman.conf || cat >> /mnt/etc/pacman.conf << 'EOF'
-
-[cachyos]
-Server = https://mirror.cachyos.org/repo/x86_64/cachyos
-SigLevel = Never
-EOF
+    _orig_siglevel=$(grep '^SigLevel' /mnt/etc/pacman.conf | head -1)
+    [ -z "$_orig_siglevel" ] && _orig_siglevel="SigLevel = Required DatabaseOptional"
+    sed -i 's/^SigLevel.*/SigLevel = Never/' /mnt/etc/pacman.conf
+    grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
+        printf '\n[cachyos]\nServer = https://mirror.cachyos.org/repo/x86_64/cachyos\n' >> /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm
     artix-chroot /mnt pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist
-    sed -i '/^\[cachyos\]/,/^SigLevel = Never/{ s/^SigLevel = Never/SigLevel = Required DatabaseOptional/ }' /mnt/etc/pacman.conf
-    sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /mnt/etc/pacman.conf
+    sed -i "s/^SigLevel.*/${_orig_siglevel}/" /mnt/etc/pacman.conf
     artix-chroot /mnt pacman-key --populate cachyos
+    sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm
 fi
 
@@ -788,21 +761,25 @@ artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chp
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
-# doas config
-cat > /mnt/etc/doas.conf << 'EOF'
+# privilege escalation config
+if [ "$PRIV_ESC" = "doas" ]; then
+    cat > /mnt/etc/doas.conf << 'EOF'
 permit persist :wheel
 permit nopass :wheel cmd pacman
 EOF
-chmod 0400 /mnt/etc/doas.conf
-
-# sudoers
-if [ -f /mnt/etc/sudoers ]; then
-    sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
-    sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
+    chmod 0400 /mnt/etc/doas.conf
+    # symlink sudo -> doas so tools that hardcode sudo still work
+    [ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
 else
-    mkdir -p /mnt/etc/sudoers.d
-    echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
-    chmod 0440 /mnt/etc/sudoers.d/wheel
+    # sudo — configure sudoers
+    if [ -f /mnt/etc/sudoers ]; then
+        sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
+        sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
+    else
+        mkdir -p /mnt/etc/sudoers.d
+        echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
+        chmod 0440 /mnt/etc/sudoers.d/wheel
+    fi
 fi
 
 # xdg dirs — create standard dirs directly, avoids chroot session issues
@@ -974,46 +951,33 @@ fi
 for DE in $DE_CHOICES; do
     case "$DE" in
         Plasma)
-            # plasma-desktop instead of plasma group — cuts ~300MB and 0.5GB RAM usage
-            # Hand-picked essentials only: shell, compositor, settings, network, audio,
-            # notifications, power management, display config, bluetooth, theming
             artix-chroot /mnt pacman -S --noconfirm \
-                plasma-desktop \
-                kwin \
-                plasma-pa \
-                plasma-nm \
-                powerdevil \
-                kscreen \
-                kde-gtk-config \
-                breeze breeze-gtk \
-                knotifications \
-                polkit-kde-agent \
-                xdg-desktop-portal-kde
-
+                plasma-desktop kwin plasma-pa plasma-nm \
+                powerdevil kscreen kde-gtk-config \
+                breeze breeze-gtk knotifications \
+                polkit-kde-agent xdg-desktop-portal-kde \
+                dolphin konsole spectacle ark gwenview \
+                plasma-systemmonitor ksystemstats bluedevil
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
-                xfce4 xdg-desktop-portal-gtk pavucontrol
-
+                xfce4 xfce4-goodies xdg-desktop-portal-gtk \
+                pavucontrol thunar-archive-plugin
             ;;
         LXQt)
             artix-chroot /mnt pacman -S --noconfirm lxqt
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu
-
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
             ;;
         XMonad)
-            # xmonad/xmonad-contrib live in Arch's [extra], not Artix repos
-            # Enable Arch repos via artix-archlinux-support first
             artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
             if ! grep -q '\[extra\]' /mnt/etc/pacman.conf; then
                 printf '\n# Arch repos\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' >> /mnt/etc/pacman.conf
                 artix-chroot /mnt pacman-key --populate archlinux
             fi
             artix-chroot /mnt pacman -Sy --noconfirm
-            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib git
-            # Clone dotfiles into ~/.config
+            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xterm dmenu git
             artix-chroot /mnt bash -c "
                 mkdir -p /home/$USERNAME/.config
                 git clone https://github.com/feribsd/xmonad-dotfiles.git /tmp/xmonad-dotfiles
@@ -1023,60 +987,22 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Openbox)
-            artix-chroot /mnt pacman -S --noconfirm openbox xterm
-
+            artix-chroot /mnt pacman -S --noconfirm openbox xterm dmenu
             ;;
         Fluxbox)
-            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm
-
+            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm dmenu
             ;;
         IceWM)
             artix-chroot /mnt pacman -S --noconfirm icewm xterm
-            artix-chroot /mnt fc-cache -fv &>/dev/null
-
             mkdir -p /mnt/home/"$USERNAME"/.config/icewm
-            # Minimal Xorg config — prevents zen kernel DRM over-allocation
-            mkdir -p /mnt/etc/X11/xorg.conf.d
-            cat > /mnt/etc/X11/xorg.conf.d/10-icewm-minimal.conf << 'EOF'
-Section "ServerFlags"
-    Option "NoPM"             "true"
-    Option "NoTrapSignals"    "false"
-    Option "BlankTime"        "0"
-    Option "StandbyTime"      "0"
-    Option "SuspendTime"      "0"
-    Option "OffTime"          "0"
-EndSection
-
-Section "Device"
-    Identifier "GPU"
-    Driver     "modesetting"
-    Option     "AccelMethod"    "glamor"
-    Option     "DRI"            "3"
-    Option     "TearFree"       "true"
-    Option     "PageFlip"       "true"
-EndSection
-
-Section "Screen"
-    Identifier "Screen0"
-    Device     "GPU"
-    DefaultDepth 24
-    SubSection "Display"
-        Depth 24
-        Modes "1920x1080"
-    EndSubSection
-EndSection
-EOF
             ;;
         Hyprland)
-            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland pavucontrol
-            # Hyprland pipewire autostart via hyprland.conf exec-once
-            # .xprofile is X11-only and does not run under Wayland/greetd
+            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland
             mkdir -p /mnt/home/"$USERNAME"/.config/hypr
             cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
 exec-once = /usr/local/bin/start-pipewire
 HYPREOF
             chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
-
             mkdir -p /mnt/usr/share/wayland-sessions
             cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
 [Desktop Entry]
@@ -1087,7 +1013,7 @@ Type=Application
 EOF
             ;;
         Moksha)
-            artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix
             ;;
         Cosmic)
             artix-chroot /mnt bash -c "
@@ -1097,10 +1023,9 @@ EOF
             artix-chroot /mnt pacman -S --noconfirm \
                 cosmic-session cosmic-comp cosmic-greeter \
                 $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc") \
-                xdg-desktop-portal-cosmic xdg-user-dirs-gtk \
-                cosmic-terminal cosmic-files cosmic-text-editor \
-                cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower pavucontrol firefox
+                xdg-desktop-portal-cosmic cosmic-terminal \
+                cosmic-files cosmic-text-editor cosmic-settings \
+                cosmic-screenshot cosmic-store upower pavucontrol
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
@@ -1208,9 +1133,6 @@ EOF
     fi
 fi
 
-# sudo symlink — after all packages installed to avoid conflicts
-# kdesu and various DE tools hardcode sudo
-[ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
 
 gauge 85 "Enabling services..."
 # enable services
