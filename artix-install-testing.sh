@@ -60,6 +60,7 @@ if [ "${1:-}" = "--test" ]; then
     NET_CHOICE="NM"
     AUDIO_PKGS=""
     PRIV_ESC="doas"
+    MULTILIB=0
     # partition layout
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
@@ -104,7 +105,7 @@ if [ "$TEST_MODE" = "0" ]; then
 # Step-based Q&A with back navigation
 # Each step sets variables; pressing Cancel goes back one step
 STEP=1
-STEP_MAX=12
+STEP_MAX=13
 
 # defaults (overwritten by each step)
 INIT="dinit"
@@ -128,6 +129,7 @@ BOOT="grub"
 USE_XLIBRE=0
 NET_CHOICE="NM"
 PRIV_ESC="doas"
+MULTILIB=0
 
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
@@ -343,18 +345,28 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-12) # Xorg + Network
+12) # 32-bit / multilib
+    if whiptail --title "$TITLE" --yesno \
+        "32-bit support  [12/$STEP_MAX]\n\nEnable the multilib repo?\n\nRequired for: Steam, Wine, 32-bit games and apps.\nAdds ~1GB of available packages. Safe to skip if unsure." \
+        11 60; then
+        MULTILIB=1
+    else
+        MULTILIB=0
+    fi
+    STEP=$(( STEP + 1 )) ;;
+
+13) # Xorg + Network
     USE_XLIBRE=0
     if [ "$DE_CHOICES" != "CLI" ] && \
        ! echo "$DE_CHOICES" | grep -qw "Cosmic" && \
        ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
         if whiptail --title "$TITLE" --yesno \
-            "XLibre or Xorg?  [12/$STEP_MAX]\n\nXLibre is Artix's actively maintained Xorg fork.\nTearFree by default, from galaxy-gremlins repo.\n\nYes = XLibre   No = standard Xorg" \
+            "XLibre or Xorg?  [13/$STEP_MAX]\n\nXLibre is Artix's actively maintained Xorg fork.\nTearFree by default, from galaxy-gremlins repo.\n\nYes = XLibre   No = standard Xorg" \
             12 60; then
             USE_XLIBRE=1
         fi
     fi
-    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [12/$STEP_MAX]" 13 65 3 \
+    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [13/$STEP_MAX]" 13 65 3 \
         "dhcpcd" "dhcpcd  — ethernet only, ~2MB" \
         "iwd"    "iwd     — wifi + ethernet, ~5MB" \
         "NM"     "NetworkManager — full featured, ~30MB" \
@@ -667,6 +679,13 @@ fi
 # pacman tweaks
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
+# Enable multilib if requested
+if [ "$MULTILIB" = "1" ]; then
+    grep -q '\[lib32\]' /mnt/etc/pacman.conf || \
+        printf '\n[lib32]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman -Sy --noconfirm
+fi
+
 # Block legacy xf86-video DDX drivers — modesetting handles everything
 # Prevents DE metapackages from pulling them in as optional deps
 grep -q 'xf86-video-amdgpu' /mnt/etc/pacman.conf || \
@@ -873,42 +892,64 @@ chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # bare WMs autologin on tty1 and startx
 BARE_WMS="i3 XMonad Openbox Fluxbox IceWM"
+
+# Write .desktop session files for bare WMs so DMs (lightdm, sddm) can launch them
 for _wm in $BARE_WMS; do
     if echo "$DE_CHOICES" | grep -qw "$_wm"; then
-        # startx on login if on tty1
-        cat >> /mnt/home/"$USERNAME"/.bash_profile << 'EOF'
+        mkdir -p /mnt/usr/share/xsessions
+        case "$_wm" in
+            i3)      _wm_exec="i3" ;;
+            XMonad)  _wm_exec="xmonad" ;;
+            Openbox) _wm_exec="openbox-session" ;;
+            Fluxbox) _wm_exec="startfluxbox" ;;
+            IceWM)   _wm_exec="icewm-session" ;;
+        esac
+        cat > "/mnt/usr/share/xsessions/${_wm}.desktop" << EOF
+[Desktop Entry]
+Name=$_wm
+Exec=$_wm_exec
+Type=Application
+EOF
+    fi
+done
+
+# Only set up autologin + startx if no DM is being installed
+# If a DM is present it owns the session — startx in .bash_profile would conflict
+_has_bare_wm=0
+for _wm in $BARE_WMS; do
+    echo "$DE_CHOICES" | grep -qw "$_wm" && _has_bare_wm=1 && break
+done
+
+if [ "$_has_bare_wm" = "1" ] && [ -z "$DM" ]; then
+    # pure bare WM setup — autologin on tty1 and startx
+    cat >> /mnt/home/"$USERNAME"/.bash_profile << 'EOF'
 [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
 EOF
-        chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
-        # autologin
-        if [ "$INIT" = "dinit" ]; then
-            cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
+    chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
+    if [ "$INIT" = "dinit" ]; then
+        cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
 type = process
 command = /sbin/agetty --autologin $USERNAME --noclear tty1 38400 linux
 restart = true
 depends-on = elogind
 EOF
-        else
-            # OpenRC: per-tty conf.d override
-            mkdir -p /mnt/etc/conf.d
-            cat > /mnt/etc/conf.d/agetty.tty1 << EOF
+    else
+        mkdir -p /mnt/etc/conf.d
+        cat > /mnt/etc/conf.d/agetty.tty1 << EOF
 agetty_options="--autologin $USERNAME --noclear"
 EOF
-            # OpenRC PAM: ensure pam_elogind registers the session
-            # and nullok lets empty-password autologin through cleanly
-            for pam_file in login system-auth; do
-                PAM_PATH="/mnt/etc/pam.d/$pam_file"
-                [ -f "$PAM_PATH" ] || continue
-                # nullok on pam_unix auth so autologin isn't rejected
-                sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
-                # pam_elogind session registration
-                grep -q 'pam_elogind.so' "$PAM_PATH" || \
-                    echo 'session optional pam_elogind.so' >> "$PAM_PATH"
-            done
-        fi
-        break
+        for pam_file in login system-auth; do
+            PAM_PATH="/mnt/etc/pam.d/$pam_file"
+            [ -f "$PAM_PATH" ] || continue
+            sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
+            grep -q 'pam_elogind.so' "$PAM_PATH" || \
+                echo 'session optional pam_elogind.so' >> "$PAM_PATH"
+        done
     fi
-done
+elif [ "$_has_bare_wm" = "1" ] && [ -n "$DM" ]; then
+    # mixed: bare WMs + a DM — DM handles login, session files written above
+    echo "==> Bare WMs registered as DM sessions — select them from $DM login screen"
+fi
 
 gauge 60 "Configuring swap..."
 # zram swap
@@ -953,10 +994,9 @@ EOF
 fi
 
 gauge 65 "Installing desktop environment..."
-# install whatever DE/WM the user picked
-if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-    DM="greetd"
-elif echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+# DM priority: Cosmic/Hyprland need greetd, Plasma needs sddm, rest use lightdm
+# greetd > sddm > lightdm — heavier DMs override lighter ones
+if echo "$DE_CHOICES" | grep -qwE "Cosmic|Hyprland"; then
     DM="greetd"
 elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
     DM="sddm"
@@ -1135,10 +1175,20 @@ fi
 
 if [ -n "$DM" ]; then
     if [[ "$DM" == "greetd" ]]; then
-        if ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-            # greetd for Hyprland
-            artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc")
-            mkdir -p /mnt/etc/greetd
+        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc")
+        mkdir -p /mnt/etc/greetd
+        if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
+            # Cosmic owns greetd — its own greeter handles session selection
+            cat > /mnt/etc/greetd/config.toml << 'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "cosmic-comp cosmic-greeter"
+user = "cosmic-greeter"
+EOF
+        else
+            # Hyprland only (or Hyprland + bare WMs — land in Hyprland by default)
             cat > /mnt/etc/greetd/config.toml << EOF
 [terminal]
 vt = 1
@@ -1148,11 +1198,12 @@ command = "Hyprland"
 user = "$USERNAME"
 EOF
         fi
-        : # COSMIC installs its own greetd in the Cosmic case block
     elif [[ "$DM" == "sddm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "sddm sddm-dinit" || echo "sddm sddm-openrc")
+        # sddm picks up all installed .desktop session files automatically
     elif [[ "$DM" == "lightdm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "lightdm lightdm-dinit lightdm-gtk-greeter" || echo "lightdm lightdm-openrc lightdm-gtk-greeter")
+        # lightdm picks up all installed .desktop session files automatically
     fi
 fi
 
@@ -1279,14 +1330,22 @@ case "$BOOT" in
         ;;
     limine)
         artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
-        artix-chroot /mnt bash -c "
-            mkdir -p /boot/EFI/limine
-            cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/
-            efibootmgr --create \
-                --disk $DISK --part 1 \
-                --label 'Limine' \
-                --loader '\\EFI\\limine\\BOOTX64.EFI'
-        "
+
+        # Get the EFI partition number from its device path
+        EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
+
+        # Install Limine EFI binary
+        mkdir -p /mnt/boot/EFI/limine
+        # Limine ships the EFI binary at this path
+        cp /mnt/usr/share/limine/BOOTX64.EFI /mnt/boot/EFI/limine/ 2>/dev/null || \
+        cp /mnt/usr/share/limine/limine-uefi.efi /mnt/boot/EFI/limine/BOOTX64.EFI 2>/dev/null || true
+
+        efibootmgr --create \
+            --disk "$DISK" \
+            --part "$EFI_PART_NUM" \
+            --label "Limine" \
+            --loader '\EFI\limine\BOOTX64.EFI'
+
         if [ "$ENCRYPT" = "1" ]; then
             PART_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
             LIMINE_CMDLINE="cryptdevice=UUID=$PART_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet"
@@ -1294,14 +1353,17 @@ case "$BOOT" in
             ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
+
+        # Limine v5+ config format
         cat > /mnt/boot/limine.conf << EOF
-timeout: 5
+TIMEOUT=5
+VERBOSE=no
 
 /Artix Linux
-    protocol: linux
-    path: boot():/vmlinuz-$FIRST_KERNEL
-    cmdline: $LIMINE_CMDLINE
-    module_path: boot():/initramfs-$FIRST_KERNEL.img
+    PROTOCOL=linux
+    KERNEL_PATH=boot():/vmlinuz-$FIRST_KERNEL
+    CMDLINE=$LIMINE_CMDLINE
+    MODULE_PATH=boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
     refind)
