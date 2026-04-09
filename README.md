@@ -12,9 +12,9 @@ A simple TUI installer for Artix Linux with dinit or openrc that gives you a min
 - Kernel ( zen, lts, standard and custom kernels like cachyos and liquorix kernel)
 - Bootloader (GRUB, Limine, rEFInd)
 - Swap (zram, swapfile, both or neither)
-- CPU microcode and GPU drivers (auto-detected)
+- CPU microcode and GPU drivers 
 - Keyboard layout, locale, timezone
-- Audio via PipeWire (note: KDE Plasma audio can be finicky)
+- Audio via PipeWire for desktop environments(note: KDE Plasma audio can be finicky)
 - doas or sudo
 - WiFi (carries your live session connection into the install)
 - Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha ///the following wms dont configure audio to reduce bloat: i3, XMonad, ,Icewm, Fluxbox or CLI-only
