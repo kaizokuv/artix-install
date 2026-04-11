@@ -157,9 +157,11 @@ while true; do
 case "$STEP" in
 
 1) # Init system
-    _v=$(whiptail --title "$TITLE" --menu "Init System  [1/$STEP_MAX]" 12 60 2 \
+    _v=$(whiptail --title "$TITLE" --menu "Init System  [1/$STEP_MAX]" 16 65 4 \
         "dinit"  "dinit  — fast, dependency-based (recommended)" \
         "openrc" "openrc — traditional, widely supported" \
+        "runit"  "runit  — minimal, supervision-based" \
+        "s6"     "s6     — small, fast, supervision-based" \
         3>&1 1>&2 2>&3) || exit 1
     INIT="$_v"; STEP=$(( STEP + 1 )) ;;
 
@@ -616,6 +618,35 @@ gauge() {
     echo ""
 }
 
+# svc_pkg <svc> — returns init-specific package name
+svc_pkg() {
+    case "$INIT" in
+        dinit)  echo "${1}-dinit" ;;
+        openrc) echo "${1}-openrc" ;;
+        runit)  echo "${1}-runit" ;;
+        s6)     echo "${1}-s6" ;;
+    esac
+}
+
+# svc_enable <svc> — enable service in installed system
+svc_enable() {
+    local _s="$1"
+    case "$INIT" in
+        dinit)
+            [ -f "/mnt/etc/dinit.d/$_s" ] &&                 artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/ ||                 echo "Warning: dinit service $_s not found"
+            ;;
+        openrc)
+            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null ||                 echo "Warning: openrc service $_s not found"
+            ;;
+        runit)
+            [ -d "/mnt/etc/runit/sv/$_s" ] &&                 artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/ ||                 echo "Warning: runit service $_s not found"
+            ;;
+        s6)
+            [ -d "/mnt/etc/s6/adminscan/$_s" ] ||                 echo "Note: s6 service $_s — will be picked up on boot"
+            ;;
+    esac
+}
+
 # swapfile
 if [[ "$SWAP" =~ Swapfile|Both ]]; then
     if [[ "$FS" == "btrfs" ]]; then
@@ -717,8 +748,8 @@ _do_basestrap() {
     local _k="$1"
     basestrap /mnt \
         base base-devel "$_k" linux-firmware $UCODE \
-        $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
-        $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
+        $(case "$INIT" in dinit) echo "dinit elogind-dinit dbus-dinit";; openrc) echo "openrc elogind-openrc dbus-openrc";; runit) echo "runit elogind-runit dbus-runit";; s6) echo "s6-base elogind-s6 dbus-s6";; esac) \
+        $([ "$NET_CHOICE" = "NM" ] && echo "networkmanager $(svc_pkg networkmanager)") \
         $([ "$PRIV_ESC" = "sudo" ] && echo "sudo" || echo "doas") $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
         ttf-dejavu ttf-liberation noto-fonts \
         $XORG_PKGS \
@@ -740,13 +771,8 @@ if [ "${ZFS_ROOT:-0}" = "1" ]; then
     artix-chroot /mnt pacman -S --noconfirm zfs-dkms zfs-utils 2>/dev/null || \
         artix-chroot /mnt pacman -S --noconfirm zfs-linux 2>/dev/null || true
     # enable zfs service
-    if [ "$INIT" = "dinit" ]; then
-        artix-chroot /mnt ln -sf /etc/dinit.d/zfs-import /etc/dinit.d/boot.d/ 2>/dev/null || true
-        artix-chroot /mnt ln -sf /etc/dinit.d/zfs-mount  /etc/dinit.d/boot.d/ 2>/dev/null || true
-    else
-        artix-chroot /mnt rc-update add zfs-import boot 2>/dev/null || true
-        artix-chroot /mnt rc-update add zfs-mount  boot 2>/dev/null || true
-    fi
+    svc_enable zfs-import 2>/dev/null || true
+    svc_enable zfs-mount  2>/dev/null || true
 else
     fstabgen -U /mnt >> /mnt/etc/fstab
 fi
@@ -1017,26 +1043,42 @@ if [ "$_has_bare_wm" = "1" ] && [ -z "$DM" ]; then
 [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
 EOF
     chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
-    if [ "$INIT" = "dinit" ]; then
-        cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
+    case "$INIT" in
+        dinit)
+            cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
 type = process
 command = /sbin/agetty --autologin $USERNAME --noclear tty1 38400 linux
 restart = true
 depends-on = elogind
 EOF
-    else
-        mkdir -p /mnt/etc/conf.d
-        cat > /mnt/etc/conf.d/agetty.tty1 << EOF
+            ;;
+        openrc)
+            mkdir -p /mnt/etc/conf.d
+            cat > /mnt/etc/conf.d/agetty.tty1 << EOF
 agetty_options="--autologin $USERNAME --noclear"
 EOF
-        for pam_file in login system-auth; do
-            PAM_PATH="/mnt/etc/pam.d/$pam_file"
-            [ -f "$PAM_PATH" ] || continue
-            sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
-            grep -q 'pam_elogind.so' "$PAM_PATH" || \
-                echo 'session optional pam_elogind.so' >> "$PAM_PATH"
-        done
-    fi
+            for pam_file in login system-auth; do
+                PAM_PATH="/mnt/etc/pam.d/$pam_file"
+                [ -f "$PAM_PATH" ] || continue
+                sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
+                grep -q 'pam_elogind.so' "$PAM_PATH" || \
+                    echo 'session optional pam_elogind.so' >> "$PAM_PATH"
+            done
+            ;;
+        runit)
+            mkdir -p /mnt/etc/runit/sv/agetty-tty1
+            printf '#!/bin/sh\nexec agetty --autologin %s --noclear tty1 linux\n' "$USERNAME" \
+                > /mnt/etc/runit/sv/agetty-tty1/run
+            chmod +x /mnt/etc/runit/sv/agetty-tty1/run
+            artix-chroot /mnt ln -sf /etc/runit/sv/agetty-tty1 /etc/runit/runsvdir/default/ 2>/dev/null || true
+            ;;
+        s6)
+            mkdir -p "/mnt/etc/s6/adminscan/agetty-tty1"
+            printf '#!/bin/execlineb -P\nagetty --autologin %s --noclear tty1 linux\n' "$USERNAME" \
+                > "/mnt/etc/s6/adminscan/agetty-tty1/run"
+            chmod +x "/mnt/etc/s6/adminscan/agetty-tty1/run"
+            ;;
+    esac
 elif [ "$_has_bare_wm" = "1" ] && [ -n "$DM" ]; then
     # mixed: bare WMs + a DM — DM handles login, session files written above
     echo "==> Bare WMs registered as DM sessions — select them from $DM login screen"
@@ -1066,22 +1108,35 @@ modprobe -r zram
 EOF
     chmod +x /mnt/usr/local/bin/zram-teardown
 
-    if [ "$INIT" = "dinit" ]; then
-        cat > /mnt/etc/dinit.d/zram << 'EOF'
+    case "$INIT" in
+        dinit)
+            cat > /mnt/etc/dinit.d/zram << 'EOF'
 type = scripted
 command = /usr/local/bin/zram-setup
 stop-command = /usr/local/bin/zram-teardown
 EOF
-    else
-        # OpenRC service
-        cat > /mnt/etc/init.d/zram << 'EOF'
+            ;;
+        openrc)
+            cat > /mnt/etc/init.d/zram << 'EOF'
 #!/sbin/openrc-run
 description="zram swap"
 command="/usr/local/bin/zram-setup"
 stop() { /usr/local/bin/zram-teardown; }
 EOF
-        chmod +x /mnt/etc/init.d/zram
-    fi
+            chmod +x /mnt/etc/init.d/zram
+            ;;
+        runit)
+            mkdir -p /mnt/etc/runit/sv/zram
+            printf '#!/bin/sh\nexec /usr/local/bin/zram-setup\n' > /mnt/etc/runit/sv/zram/run
+            printf '#!/bin/sh\nexec /usr/local/bin/zram-teardown\n' > /mnt/etc/runit/sv/zram/finish
+            chmod +x /mnt/etc/runit/sv/zram/run /mnt/etc/runit/sv/zram/finish
+            ;;
+        s6)
+            mkdir -p /mnt/etc/s6/adminscan/zram
+            printf '#!/bin/execlineb -P\n/usr/local/bin/zram-setup\n' > /mnt/etc/s6/adminscan/zram/run
+            chmod +x /mnt/etc/s6/adminscan/zram/run
+            ;;
+    esac
 fi
 
 gauge 65 "Installing desktop environment..."
@@ -1175,7 +1230,7 @@ EOF
             "
             artix-chroot /mnt pacman -S --noconfirm \
                 cosmic-session cosmic-comp cosmic-greeter \
-                $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc") \
+                greetd "$(svc_pkg greetd)" \
                 xdg-desktop-portal-cosmic cosmic-terminal \
                 cosmic-files cosmic-text-editor cosmic-settings \
                 cosmic-screenshot cosmic-store upower pavucontrol || _de_ok=0
@@ -1266,7 +1321,7 @@ fi
 
 if [ -n "$DM" ]; then
     if [[ "$DM" == "greetd" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc")
+        artix-chroot /mnt pacman -S --noconfirm greetd "$(svc_pkg greetd)"
         mkdir -p /mnt/etc/greetd
         if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
             # Cosmic owns greetd — its own greeter handles session selection
@@ -1290,10 +1345,10 @@ user = "$USERNAME"
 EOF
         fi
     elif [[ "$DM" == "sddm" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "sddm sddm-dinit" || echo "sddm sddm-openrc")
+        artix-chroot /mnt pacman -S --noconfirm sddm "$(svc_pkg sddm)"
         # sddm picks up all installed .desktop session files automatically
     elif [[ "$DM" == "lightdm" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "lightdm lightdm-dinit lightdm-gtk-greeter" || echo "lightdm lightdm-openrc lightdm-gtk-greeter")
+        artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-gtk-greeter "$(svc_pkg lightdm)"
         # lightdm picks up all installed .desktop session files automatically
     fi
 fi
@@ -1310,19 +1365,11 @@ EOF
 # Install chosen network stack + migrate NM wifi profiles if needed
 case "$NET_CHOICE" in
     dhcpcd)
-        if [ "$INIT" = "dinit" ]; then
-            artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-dinit
-        else
-            artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-openrc
-        fi
+        artix-chroot /mnt pacman -S --noconfirm dhcpcd "$(svc_pkg dhcpcd)"
         NET_SVC="dhcpcd"
         ;;
     iwd)
-        if [ "$INIT" = "dinit" ]; then
-            artix-chroot /mnt pacman -S --noconfirm iwd iwd-dinit
-        else
-            artix-chroot /mnt pacman -S --noconfirm iwd iwd-openrc
-        fi
+        artix-chroot /mnt pacman -S --noconfirm iwd "$(svc_pkg iwd)"
         NET_SVC="iwd"
         if [ -d /etc/NetworkManager/system-connections ]; then
             mkdir -p /mnt/var/lib/iwd
@@ -1344,43 +1391,45 @@ case "$NET_CHOICE" in
         ;;
 esac
 
-if [ "$INIT" = "dinit" ]; then
-    artix-chroot /mnt pacman -S --noconfirm cpupower cpupower-dinit
-    mkdir -p /mnt/etc/dinit.d/boot.d
-    SVCS="dbus $NET_SVC elogind cpupower"
-    [ -f /mnt/etc/dinit.d/rtkit-daemon ] && SVCS="$SVCS rtkit-daemon" \
-        || { [ -f /mnt/etc/dinit.d/rtkit ] && SVCS="$SVCS rtkit"; }
-    echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled"
-    [ -n "$DM" ] && SVCS="$SVCS $DM"
-    for svc in $SVCS; do
-        if [ -f "/mnt/etc/dinit.d/$svc" ]; then
-            artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
-        else
-            echo "Warning: dinit service '$svc' not found, skipping."
-        fi
-    done
-    [[ "$SWAP" =~ Zram|Both ]] && [ -f /mnt/etc/dinit.d/zram ] && \
-        artix-chroot /mnt ln -sf /etc/dinit.d/zram /etc/dinit.d/boot.d/ || true
-    for tty in 2 3 4 5 6; do
-        rm -f /mnt/etc/dinit.d/boot.d/getty@tty${tty} 2>/dev/null || true
-        artix-chroot /mnt dinitctl disable getty@tty${tty} 2>/dev/null || true
-    done
-else
-    # OpenRC
-    artix-chroot /mnt pacman -S --noconfirm cpupower cpupower-openrc
-    SVCS="dbus $NET_SVC elogind cpupower"
-    [ -f /mnt/etc/init.d/rtkit ] && SVCS="$SVCS rtkit"
-    echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower"
-    [ -n "$DM" ] && SVCS="$SVCS $DM"
-    for svc in $SVCS; do
-        artix-chroot /mnt rc-update add "$svc" default 2>/dev/null \
-            || echo "Warning: openrc service '$svc' not found, skipping."
-    done
-    [[ "$SWAP" =~ Zram|Both ]] && artix-chroot /mnt rc-update add zram boot 2>/dev/null || true
-    for tty in 2 3 4 5 6; do
-        artix-chroot /mnt rc-update del agetty.tty${tty} 2>/dev/null || true
-    done
-fi
+artix-chroot /mnt pacman -S --noconfirm cpupower "$(svc_pkg cpupower)"
+
+SVCS="dbus $NET_SVC elogind cpupower"
+echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower"
+[ -n "$DM" ] && SVCS="$SVCS $DM"
+
+case "$INIT" in
+    dinit)
+        mkdir -p /mnt/etc/dinit.d/boot.d
+        [ -f /mnt/etc/dinit.d/rtkit-daemon ] && SVCS="$SVCS rtkit-daemon"             || { [ -f /mnt/etc/dinit.d/rtkit ] && SVCS="$SVCS rtkit"; }
+        echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS turnstiled"
+        for svc in $SVCS; do svc_enable "$svc"; done
+        [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
+        for tty in 2 3 4 5 6; do
+            rm -f /mnt/etc/dinit.d/boot.d/getty@tty${tty} 2>/dev/null || true
+            artix-chroot /mnt dinitctl disable getty@tty${tty} 2>/dev/null || true
+        done
+        ;;
+    openrc)
+        [ -f /mnt/etc/init.d/rtkit ] && SVCS="$SVCS rtkit"
+        for svc in $SVCS; do svc_enable "$svc"; done
+        [[ "$SWAP" =~ Zram|Both ]] && artix-chroot /mnt rc-update add zram boot 2>/dev/null || true
+        for tty in 2 3 4 5 6; do
+            artix-chroot /mnt rc-update del agetty.tty${tty} 2>/dev/null || true
+        done
+        ;;
+    runit)
+        mkdir -p /mnt/etc/runit/runsvdir/default
+        [ -f /mnt/etc/runit/sv/rtkit/run ] && SVCS="$SVCS rtkit"
+        for svc in $SVCS; do svc_enable "$svc"; done
+        [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
+        ;;
+    s6)
+        [ -d /mnt/etc/s6/adminscan/rtkit ] && SVCS="$SVCS rtkit"
+        for svc in $SVCS; do svc_enable "$svc"; done
+        [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
+        artix-chroot /mnt s6-rc-db-update 2>/dev/null || true
+        ;;
+esac
 
 gauge 90 "Installing bootloader..."
 # =========================
