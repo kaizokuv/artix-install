@@ -1,4 +1,4 @@
-#!/bin/bash
+/bin/bash
 set -e
 set -o pipefail
 
@@ -352,8 +352,8 @@ case "$STEP" in
     case "$GPU_CHOICE" in
         intel)  GPU="mesa vulkan-intel" ;;
         amd)    GPU="mesa vulkan-radeon" ;;
-        nvidia) GPU="mesa nvidia nvidia-utils" ;;
-        hybrid) GPU="mesa vulkan-intel nvidia nvidia-utils" ;;
+        nvidia) GPU="mesa nvidia-dkms nvidia-utils" ;;
+        hybrid) GPU="mesa vulkan-intel nvidia-dkms nvidia-utils" ;;
         vm)     GPU="mesa" ;;
     esac
     STEP=$(( STEP + 1 )) ;;
@@ -676,7 +676,7 @@ done
 # XLibre is now in the main Artix [world] repo — no extra repo needed
 XORG_PKGS=""
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-xf86-input-libinput xorg-xinit"
+    XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-input-libinput xorg-xinit"
 fi
 
 # Only install audio stack for DEs that actually use it
