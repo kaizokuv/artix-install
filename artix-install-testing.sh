@@ -187,14 +187,15 @@ case "$STEP" in
     FS="$_v"; STEP=$(( STEP + 1 )) ;;
 
 4) # Swap
-    _v=$(whiptail --title "$TITLE" --menu "Swap  [4/$STEP_MAX]" 12 60 4 \
-        "Zram"     "zram (compressed RAM swap)" \
-        "Swapfile" "Swapfile on disk" \
-        "Both"     "Zram + Swapfile" \
-        "None"     "No swap" \
+    _v=$(whiptail --title "$TITLE" --menu "Swap  [4/$STEP_MAX]" 14 65 5 \
+        "Zram"      "zram — compressed RAM swap (recommended)" \
+        "Swapfile"  "Swapfile on root partition" \
+        "Both"      "Zram + Swapfile" \
+        "Partition" "Dedicated swap partition (auto layout only)" \
+        "None"      "No swap" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     SWAP="$_v"
-    if [[ "$SWAP" =~ Swapfile|Both ]]; then
+    if [[ "$SWAP" =~ Swapfile|Both|Partition ]]; then
         SWAP_MENU_ARGS=()
         for SZ in 1 2 4 8 16; do
             (( SZ == RAM_HALF_GB )) \
@@ -416,15 +417,29 @@ PART_MODE=$(whiptail --title "$TITLE" --menu \
 case "$PART_MODE" in
     auto)
         if [ "$UEFI" = "1" ]; then
-            PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
-            PART_SIZES=( "1" "0" )
-            PART_TYPES=( "EFI" "root" )
-            EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+            if [ "$SWAP" = "Partition" ]; then
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" "${DISK}${P}3" )
+                PART_SIZES=( "1" "$SWAP_SIZE_GB" "0" )
+                PART_TYPES=( "EFI" "swap" "root" )
+                EFI="${DISK}${P}1"; ROOT="${DISK}${P}3"
+            else
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+                PART_SIZES=( "1" "0" )
+                PART_TYPES=( "EFI" "root" )
+                EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+            fi
         else
-            PART_DEVS=( "${DISK}${P}1" )
-            PART_SIZES=( "0" )
-            PART_TYPES=( "root" )
-            ROOT="${DISK}${P}1"
+            if [ "$SWAP" = "Partition" ]; then
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+                PART_SIZES=( "$SWAP_SIZE_GB" "0" )
+                PART_TYPES=( "swap" "root" )
+                ROOT="${DISK}${P}2"
+            else
+                PART_DEVS=( "${DISK}${P}1" )
+                PART_SIZES=( "0" )
+                PART_TYPES=( "root" )
+                ROOT="${DISK}${P}1"
+            fi
         fi
         ;;
     manual)
