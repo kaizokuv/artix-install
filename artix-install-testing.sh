@@ -1,4 +1,4 @@
-/bin/bash
+#!/bin/bash
 set -e
 set -o pipefail
 
@@ -1460,6 +1460,21 @@ case "$BOOT" in
                 --efi-directory=/boot \
                 --bootloader-id=Artix \
                 --recheck
+
+            # Also install to the fallback path /EFI/BOOT/BOOTX64.EFI
+            # Many boards (especially cheaper/older ones) ignore NVRAM entries
+            # and only boot from this hardcoded fallback location
+            mkdir -p /mnt/boot/EFI/BOOT
+            cp /mnt/boot/EFI/Artix/grubx64.efi /mnt/boot/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+
+            # Register an explicit NVRAM boot entry — grub-install does this but
+            # some firmware clears it on reboot; efibootmgr makes it stick
+            EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
+            efibootmgr --create \
+                --disk "$DISK" \
+                --part "$EFI_PART_NUM" \
+                --label "Artix Linux" \
+                --loader '\EFI\Artix\grubx64.efi' 2>/dev/null || true
         else
             artix-chroot /mnt grub-install --target=i386-pc --recheck "$DISK"
         fi
@@ -1488,7 +1503,11 @@ case "$BOOT" in
             --disk "$DISK" \
             --part "$EFI_PART_NUM" \
             --label "Limine" \
-            --loader '\EFI\limine\BOOTX64.EFI'
+            --loader '\EFI\limine\BOOTX64.EFI' 2>/dev/null || true
+
+        # Fallback path — boards that ignore NVRAM entries boot from here
+        mkdir -p /mnt/boot/EFI/BOOT
+        cp /mnt/boot/EFI/limine/BOOTX64.EFI /mnt/boot/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
         if [ "$ENCRYPT" = "1" ]; then
             PART_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
@@ -1513,6 +1532,13 @@ EOF
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
+        # Explicit NVRAM entry — refind-install does this but reinforcing helps on picky firmware
+        EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
+        efibootmgr --create \
+            --disk "$DISK" \
+            --part "$EFI_PART_NUM" \
+            --label "rEFInd" \
+            --loader '\\EFI\\refind\\refind_x64.efi' 2>/dev/null || true
         ROOT_UUID=$(blkid -s UUID -o value "${REAL_ROOT:-$ROOT}")
         if [ "$ENCRYPT" = "1" ]; then
             printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet"\n' \
