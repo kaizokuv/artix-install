@@ -1557,16 +1557,16 @@ case "$BOOT" in
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
 
-        # Limine v5+ config format
+        # Limine config — tested against v7+ format (uppercase keys, /entry syntax)
         cat > /mnt/boot/limine.conf << EOF
-TIMEOUT=5
-VERBOSE=no
+timeout=5
+verbose=no
 
 /Artix Linux
-    PROTOCOL=linux
-    KERNEL_PATH=boot():/vmlinuz-$FIRST_KERNEL
-    CMDLINE=$LIMINE_CMDLINE
-    MODULE_PATH=boot():/initramfs-$FIRST_KERNEL.img
+    protocol=linux
+    kernel_path=boot():/vmlinuz-$FIRST_KERNEL
+    kernel_cmdline=$LIMINE_CMDLINE
+    module_path=boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
     refind)
