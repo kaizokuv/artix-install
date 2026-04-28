@@ -29,6 +29,9 @@ fi
 clear
 TITLE="Artix Master Installer"
 
+declare -A PART_FS
+EXTRA_MOUNTS=()
+
 # =========================
 # TEST / FAST MODE
 # =========================
@@ -73,7 +76,6 @@ if [ "${1:-}" = "--test" ]; then
         EFI=""; ROOT="${DISK}${P}1"
     fi
     DUALBOOT=0; SWAP_PART=""
-    declare -A PART_FS
     EXTRA_MOUNTS=()
     ZFS_ROOT=0
     echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI"
@@ -404,8 +406,6 @@ DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""; ROOT=""; DUALBOOT=0
 [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
-declare -A PART_FS
-EXTRA_MOUNTS=()
 
 PART_MODE=$(whiptail --title "$TITLE" --menu \
     "Partitioning — $DISK (${DISK_SIZE_GB}GB)" 13 65 3 \
@@ -454,13 +454,13 @@ case "$PART_MODE" in
             EFI=$(whiptail --title "$TITLE" --menu "Select EFI partition" \
                 16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
             _efi_fs=$(pick_fs "Filesystem for EFI partition" "vfat") || _efi_fs="vfat"
-            PART_FS["$EFI"]="$_efi_fs"
+            PART_FS["$(fs_key "$EFI")"]="$_efi_fs"
         fi
         ROOT=$(whiptail --title "$TITLE" --menu "Select root partition" \
             16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
         _root_fs=$(pick_fs "Filesystem for root partition" "$FS") || _root_fs="$FS"
         FS="$_root_fs"
-        PART_FS["$ROOT"]="$_root_fs"
+        PART_FS["$(fs_key "$ROOT")"]="$_root_fs"
         # offer extra partitions (home, data, etc.)
         while true; do
             _remain_args=("skip" "Done — no more partitions")
@@ -476,7 +476,7 @@ case "$PART_MODE" in
             _extra_mp=$(whiptail --title "$TITLE" --inputbox \
                 "Mount point for $_extra" 10 55 "/home" 3>&1 1>&2 2>&3) || break
             _extra_fs=$(pick_fs "Filesystem for $_extra ($_extra_mp)") || _extra_fs="ext4"
-            PART_FS["$_extra"]="$_extra_fs"
+            PART_FS["$(fs_key "$_extra")"]="$_extra_fs"
             EXTRA_MOUNTS+=("$_extra:$_extra_mp")
         done
         PART_DEVS=(); PART_SIZES=(); PART_TYPES=()
@@ -556,8 +556,11 @@ if [ "$ENCRYPT" = "1" ]; then
     echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
     REAL_ROOT="$ROOT"
     ROOT="/dev/mapper/cryptroot"
-    PART_FS["$ROOT"]="${PART_FS[$REAL_ROOT]:-$FS}"
+    PART_FS["$(fs_key "$ROOT")"]="${PART_FS[$(fs_key "$REAL_ROOT")]:-$FS}"
 fi
+
+# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
+fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
 
 # format_part <device> <fstype>
 format_part() {
@@ -599,12 +602,12 @@ format_part() {
 
 # Format EFI (always vfat unless user picked something exotic)
 [ "$UEFI" = "1" ] && [ -n "$EFI" ] && {
-    _efi_fs="${PART_FS[$EFI]:-vfat}"
+    _efi_fs="${PART_FS[$(fs_key "$EFI")]:-vfat}"
     format_part "$EFI" "$_efi_fs"
 }
 
 # Format root
-_root_fs="${PART_FS[$ROOT]:-$FS}"
+_root_fs="${PART_FS[$(fs_key "$ROOT")]:-$FS}"
 if [ "$_root_fs" = "zfs" ]; then
     format_part "$ROOT" "zfs"
     # ZFS import already mounted /mnt — skip normal mount below
@@ -623,7 +626,7 @@ for _em in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
     [ -z "$_em" ] && continue
     _em_dev="${_em%%:*}"
     _em_mp="${_em##*:}"
-    _em_fs="${PART_FS[$_em_dev]:-ext4}"
+    _em_fs="${PART_FS[$(fs_key "$_em_dev")]:-ext4}"
     [ "$_em_fs" != "zfs" ] && format_part "$_em_dev" "$_em_fs"
     mkdir -p "/mnt${_em_mp}"
     [ "$_em_fs" != "zfs" ] && mount "$_em_dev" "/mnt${_em_mp}"
@@ -1559,16 +1562,17 @@ case "$BOOT" in
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
 
-        # Limine config — tested against v7+ format (uppercase keys, /entry syntax)
+        # Limine config — key names from official CONFIG.md
+        # protocol, path, cmdline, module_path (NOT kernel_path/kernel_cmdline)
         cat > /mnt/boot/limine.conf << EOF
-timeout=5
-verbose=no
+timeout: 5
+verbose: no
 
 /Artix Linux
-    protocol=linux
-    kernel_path=boot():/vmlinuz-$FIRST_KERNEL
-    kernel_cmdline=$LIMINE_CMDLINE
-    module_path=boot():/initramfs-$FIRST_KERNEL.img
+    protocol: linux
+    path: boot():/vmlinuz-$FIRST_KERNEL
+    cmdline: $LIMINE_CMDLINE
+    module_path: boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
     refind)
