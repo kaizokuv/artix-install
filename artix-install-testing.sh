@@ -62,6 +62,10 @@ if [ "${1:-}" = "--test" ]; then
     AUDIO_PKGS=""
     PRIV_ESC="doas"
     MULTILIB=0
+    ENABLE_ARCH=0
+    ENABLE_GALAXY=0
+    ENABLE_GALAXY32=0
+    ENABLE_CACHYOS=0
     # partition layout
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
@@ -153,6 +157,10 @@ BOOT="grub"
 NET_CHOICE="NM"
 PRIV_ESC="doas"
 MULTILIB=0
+ENABLE_ARCH=0
+ENABLE_GALAXY=0
+ENABLE_GALAXY32=0
+ENABLE_CACHYOS=0
 
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
@@ -327,16 +335,19 @@ case "$STEP" in
 
 10) # Kernel + CPU + GPU
     KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
-        "Kernel  [10/$STEP_MAX]" 14 70 5 \
+        "Kernel  [10/$STEP_MAX]" 16 70 6 \
         "linux"         "Standard"                                    ON  \
         "linux-lts"     "LTS — long term support"                     OFF \
         "linux-zen"     "Zen — desktop optimised"                     OFF \
         "linux-lqx"     "Liquorix — low latency"                      OFF \
         "linux-cachyos" "CachyOS — BORE scheduler (adds CachyOS repo)" OFF \
+        "linux-xanmod"  "XanMod — AUR, compiles from source (~1hr)"   OFF \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
     [ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
     FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+    # XanMod is AUR-only, can't be basestrapped — use linux as base if xanmod is first
+    [ "$FIRST_KERNEL" = "linux-xanmod" ] && FIRST_KERNEL="linux"
     _v=$(whiptail --title "$TITLE" --menu "CPU Vendor  [10/$STEP_MAX]" 10 50 3 \
         "intel" "Intel" "amd" "AMD" "other" "Other / VM" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
@@ -374,14 +385,22 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-12) # 32-bit / multilib
-    if whiptail --title "$TITLE" --yesno \
-        "32-bit support  [12/$STEP_MAX]\n\nEnable the multilib repo?\n\nRequired for: Steam, Wine, 32-bit games and apps.\nAdds ~1GB of available packages. Safe to skip if unsure." \
-        11 60; then
-        MULTILIB=1
-    else
-        MULTILIB=0
-    fi
+12) # Extra repos
+    _repos=$(whiptail --title "$TITLE" --checklist \
+        "Extra Repositories  [12/$STEP_MAX]" \
+        16 72 5 \
+        "multilib"  "lib32 — Steam, Wine, 32-bit apps"              OFF \
+        "arch"      "Arch [extra] — wider package selection"        OFF \
+        "galaxy"    "Artix galaxy — community packages"             OFF \
+        "galaxy32"  "Artix galaxy-lib32 — 32-bit galaxy packages"  OFF \
+        "cachyos"   "CachyOS — performance packages + kernels"     OFF \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    _repos=$(echo "$_repos" | tr -d '"')
+    echo "$_repos" | grep -qw multilib && MULTILIB=1      || MULTILIB=0
+    echo "$_repos" | grep -qw arch     && ENABLE_ARCH=1   || ENABLE_ARCH=0
+    echo "$_repos" | grep -qw galaxy   && ENABLE_GALAXY=1 || ENABLE_GALAXY=0
+    echo "$_repos" | grep -qw galaxy32 && ENABLE_GALAXY32=1 || ENABLE_GALAXY32=0
+    echo "$_repos" | grep -qw cachyos  && ENABLE_CACHYOS=1 || ENABLE_CACHYOS=0
     STEP=$(( STEP + 1 )) ;;
 
 13) # Network
@@ -743,8 +762,8 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
     pacman -Sy
 fi
 
-# cachyos repo — only needed for linux-cachyos kernel
-if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
+# cachyos repo — enabled by repo selection or linux-cachyos kernel
+if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     _cachy_ok=0
     set +e
 
@@ -806,6 +825,13 @@ if ! _do_basestrap "$FIRST_KERNEL"; then
     _do_basestrap linux
 fi
 
+# XanMod can't be basestrapped (AUR only) — if it's the only/first kernel,
+# basestrap used linux above; XanMod will be built in the extra kernels step
+if echo "$KERNEL_CHOICES" | grep -qw "linux-xanmod"; then
+    # ensure linux is in the mix as a fallback until xanmod is built
+    echo "$KERNEL_CHOICES" | grep -qw "linux" || KERNEL_CHOICES="linux $KERNEL_CHOICES"
+fi
+
 gauge 35 "Writing fstab..."
 if [ "${ZFS_ROOT:-0}" = "1" ]; then
     # ZFS root: generate fstab for non-ZFS mounts only, ZFS handles itself
@@ -839,10 +865,33 @@ fi
 # pacman tweaks
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
-# Enable multilib if requested
-if [ "$MULTILIB" = "1" ]; then
-    grep -q '\[lib32\]' /mnt/etc/pacman.conf || \
-        printf '\n[lib32]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+# Enable selected extra repos in installed system
+if [ "$ENABLE_ARCH" = "1" ] && ! grep -q '\[extra\]' /mnt/etc/pacman.conf; then
+    artix-chroot /mnt pacman -S --noconfirm --needed artix-archlinux-support
+    printf '
+# Arch repos
+[extra]
+Include = /etc/pacman.d/mirrorlist-arch
+' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman-key --populate archlinux
+fi
+
+[ "$MULTILIB" = "1" ] && grep -q '\[lib32\]' /mnt/etc/pacman.conf ||     { [ "$MULTILIB" = "1" ] && printf '
+[lib32]
+Include = /etc/pacman.d/mirrorlist
+' >> /mnt/etc/pacman.conf; }
+
+[ "$ENABLE_GALAXY" = "1" ] && ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf &&     printf '
+[galaxy]
+Include = /etc/pacman.d/mirrorlist
+' >> /mnt/etc/pacman.conf
+
+[ "$ENABLE_GALAXY32" = "1" ] && ! grep -q '\[galaxy-lib32\]' /mnt/etc/pacman.conf &&     printf '
+[galaxy-lib32]
+Include = /etc/pacman.d/mirrorlist
+' >> /mnt/etc/pacman.conf
+
+if [ "$MULTILIB" = "1" ] || [ "$ENABLE_ARCH" = "1" ] || [ "$ENABLE_GALAXY" = "1" ] || [ "$ENABLE_GALAXY32" = "1" ]; then
     artix-chroot /mnt pacman -Sy --noconfirm
 fi
 
@@ -862,7 +911,7 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
 fi
 
 # cachyos repo in the installed system
-if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
+if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     _orig_siglevel=$(grep '^SigLevel' /mnt/etc/pacman.conf | head -1)
     [ -z "$_orig_siglevel" ] && _orig_siglevel="SigLevel = Required DatabaseOptional"
     sed -i 's/^SigLevel.*/SigLevel = Never/' /mnt/etc/pacman.conf
@@ -893,7 +942,21 @@ fi
 # Extra kernels — skip silently if they fail
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
-    if [ "$K" = "linux-cachyos" ]; then
+    if [ "$K" = "linux-xanmod" ]; then
+        echo "==> Building linux-xanmod from AUR — this will take a while..."
+        artix-chroot /mnt bash -c "
+            pacman -S --noconfirm --needed git base-devel
+            git clone https://aur.archlinux.org/linux-xanmod.git /tmp/linux-xanmod
+            chown -R ${USERNAME}:${USERNAME} /tmp/linux-xanmod
+            cd /tmp/linux-xanmod
+            # Use doas -u if available, otherwise sudo -u (will be wrapped by our sudo script)
+            doas -u ${USERNAME} bash -c 'cd /tmp/linux-xanmod && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s' || \
+            sudo -u ${USERNAME} bash -c 'cd /tmp/linux-xanmod && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s'
+            pacman -U --noconfirm /tmp/linux-xanmod/linux-xanmod-*.pkg.tar.zst || true
+            pacman -U --noconfirm /tmp/linux-xanmod/linux-xanmod-headers-*.pkg.tar.zst || true
+            rm -rf /tmp/linux-xanmod
+        " || echo "==> Warning: linux-xanmod build failed, skipping"
+    elif [ "$K" = "linux-cachyos" ]; then
         artix-chroot /mnt pacman -S --noconfirm linux-cachyos || echo "==> Warning: linux-cachyos failed, skipping"
     elif [ "$K" = "linux-lqx" ]; then
         artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers || echo "==> Warning: linux-lqx failed, skipping"
@@ -972,11 +1035,31 @@ if [ "$PRIV_ESC" = "doas" ]; then
     # ensure doas is installed (may have been skipped if sudo was chosen initially)
     [ ! -f /mnt/usr/bin/doas ] && artix-chroot /mnt pacman -S --noconfirm doas 2>/dev/null || true
     cat > /mnt/etc/doas.conf << 'EOF'
-permit persist :wheel
-permit nopass :wheel cmd pacman
+# keepenv preserves env vars — required for yay/paru (MAKEFLAGS, BUILDDIR, etc.)
+permit keepenv persist :wheel
+permit keepenv nopass :wheel cmd pacman
+permit keepenv nopass :wheel cmd makepkg
 EOF
     chmod 0400 /mnt/etc/doas.conf
-    [ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
+    # Replace any existing sudo symlink with a wrapper script
+    # doas doesn't support all sudo flags AUR helpers use (-E, -u, --, --preserve-env)
+    rm -f /mnt/usr/bin/sudo
+    cat > /mnt/usr/local/bin/sudo << 'SUDOWRAP'
+#!/bin/sh
+# Thin sudo->doas wrapper — handles flags yay/paru/makepkg commonly pass
+_preserve_env=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -E|--preserve-env) _preserve_env=1; shift ;;
+        -u|--user) shift; exec doas -u "$1" -- "${@:2}" ;;
+        --) shift; break ;;
+        -*) shift ;;  # ignore unknown flags
+        *) break ;;
+    esac
+done
+[ "$_preserve_env" = "1" ] && exec doas env "$@" || exec doas "$@"
+SUDOWRAP
+    chmod +x /mnt/usr/local/bin/sudo
 fi
 
 # xdg dirs — create standard dirs directly, avoids chroot session issues
@@ -1599,7 +1682,90 @@ esac
 
 gauge 100 "Installation complete!"
 
+# Offer AUR helper setup before final options
+if [ "$PRIV_ESC" = "doas" ]; then
+    echo ""
+    echo "==> AUR Helper Setup"
+    echo ""
+    _aur=$(whiptail --title "$TITLE" --menu \
+        "Select AUR Helper\n\nNote: yay is HEAVILY sudo-centric and causes headaches with doas.\nparu is recommended for doas-only systems." \
+        15 70 3 \
+        "paru"   "paru (RECOMMENDED) — doas-native, no sudo headaches" \
+        "yay"    "yay — install sudo too (works but requires workarounds)" \
+        "none"   "None — use makepkg manually or skip AUR packages" \
+        3>&1 1>&2 2>&3) || _aur="none"
+    
+    case "$_aur" in
+        paru)
+            echo "==> Installing paru from AUR (doas-compatible)..."
+            artix-chroot /mnt bash -c "
+                pacman -S --noconfirm --needed git base-devel
+                git clone https://aur.archlinux.org/paru.git /tmp/paru
+                chown -R ${USERNAME}:${USERNAME} /tmp/paru
+                cd /tmp/paru
+                doas -u ${USERNAME} bash -c 'cd /tmp/paru && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -si' || true
+                rm -rf /tmp/paru
+            " && echo "==> paru installed successfully" || echo "==> Warning: paru install failed"
+            ;;
+        yay)
+            echo "==> Installing sudo (required for yay)..."
+            artix-chroot /mnt pacman -S --noconfirm sudo
+            echo "==> Installing yay from AUR..."
+            echo "    (Note: yay will use sudo internally, not doas)"
+            echo "    (Consider using paru instead for better doas integration)"
+            artix-chroot /mnt bash -c "
+                pacman -S --noconfirm --needed git base-devel
+                git clone https://aur.archlinux.org/yay.git /tmp/yay
+                chown -R ${USERNAME}:${USERNAME} /tmp/yay
+                cd /tmp/yay
+                sudo -u ${USERNAME} bash -c 'cd /tmp/yay && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -si' || true
+                rm -rf /tmp/yay
+            " && echo "==> yay installed successfully" || echo "==> Warning: yay install failed"
+            echo ""
+            echo "==> WARNING: You now have both doas and sudo."
+            echo "    yay uses sudo internally and won't respect doas configuration."
+            echo "    If you want pure doas, reinstall paru instead."
+            ;;
+        *)
+            echo "==> Skipping AUR helper installation."
+            echo "    You can install paru or yay manually after boot:"
+            echo "    $ doas pacman -S base-devel git"
+            echo "    $ git clone https://aur.archlinux.org/paru.git && cd paru && makepkg -si"
+            ;;
+    esac
+    echo ""
+fi
+
 umount -R /mnt 2>/dev/null || true
 
-whiptail --title "$TITLE" --yesno "Installation complete!\n\nReboot now?" 10 50 \
-    && reboot || true
+_end=$(whiptail --title "$TITLE" --menu \
+    "Installation complete!\n\nWhat would you like to do?" \
+    12 60 3 \
+    "reboot" "Reboot into the new system" \
+    "chroot" "Chroot into the installed system" \
+    "exit"   "Exit to live environment" \
+    3>&1 1>&2 2>&3) || _end="exit"
+
+case "$_end" in
+    reboot)
+        reboot
+        ;;
+    chroot)
+        # Remount everything for chroot
+        mount "${ROOT}" /mnt 2>/dev/null || true
+        [ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot 2>/dev/null || true
+        for _em in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
+            [ -z "$_em" ] && continue
+            _em_dev="${_em%%:*}"; _em_mp="${_em##*:}"
+            mount "$_em_dev" "/mnt${_em_mp}" 2>/dev/null || true
+        done
+        echo ""
+        echo "==> Entering chroot. Type 'exit' or Ctrl-D to leave."
+        echo ""
+        artix-chroot /mnt /bin/bash
+        umount -R /mnt 2>/dev/null || true
+        ;;
+    *)
+        echo "Exiting. You can reboot manually when ready."
+        ;;
+esac
