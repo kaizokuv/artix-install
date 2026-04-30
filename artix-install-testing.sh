@@ -51,6 +51,7 @@ if [ "${1:-}" = "--test" ]; then
     KB_LAYOUT="us"; VC_KEYMAP="us"
     HOSTNAME="artix"
     USERNAME="user"
+    USER_SHELL="/bin/bash"
     ROOTPW="idk"; USERPW="idk"
     INSTALL_TYPE="CLI"; DE_CHOICES="CLI"
     KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
@@ -148,6 +149,7 @@ TIMEZONE="Europe/London"
 KB_LAYOUT="us"
 HOSTNAME="artix"
 USERNAME="user"
+USER_SHELL="/bin/bash"
 ROOTPW=""; USERPW=""
 INSTALL_TYPE="CLI"; DE_CHOICES="CLI"
 KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
@@ -205,6 +207,12 @@ case "$STEP" in
         "None"      "No swap" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     SWAP="$_v"
+    # Warn about swapfile + LUKS encryption interaction
+    if [ "$ENCRYPT" = "1" ] && [[ "$SWAP" =~ Swapfile|Both ]]; then
+        whiptail --title "$TITLE" --msgbox \
+            "⚠️  WARNING: Swapfile + LUKS Encryption\n\nSwapfiles on encrypted root can cause issues.\n\nRecommendations:\n• Use Zram (safer with encryption)\n• Create separate unencrypted swap partition\n• Use no swap\n\nProceeding with swapfile — ensure sufficient RAM." \
+            13 65
+    fi
     if [[ "$SWAP" =~ Swapfile|Both|Partition ]]; then
         SWAP_MENU_ARGS=()
         for SZ in 1 2 4 8 16; do
@@ -247,7 +255,12 @@ case "$STEP" in
         "zh_CN.UTF-8" "Chinese (Simplified)" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     LOCALE="$_v"
-    _v=$(whiptail --title "$TITLE" --menu "Timezone  [6/$STEP_MAX]" 20 62 12 \
+    # Try to auto-detect timezone from IP geolocation
+    _tz_auto=$(curl -s "https://ipapi.co/json/" 2>/dev/null | grep -o '"timezone":"[^"]*' | cut -d'"' -f4)
+    _tz_default="UTC"
+    [ -n "$_tz_auto" ] && _tz_default="$_tz_auto"
+    
+    _v=$(whiptail --title "$TITLE" --menu "Timezone  [6/$STEP_MAX]\n\n(Auto-detected: $_tz_default)" 20 62 12 \
         "Europe/London"      "UK"                 "Europe/Dublin"     "Ireland" \
         "Europe/Paris"       "France/CET"         "Europe/Berlin"     "Germany" \
         "Europe/Amsterdam"   "Netherlands"        "Europe/Madrid"     "Spain" \
@@ -286,7 +299,7 @@ case "$STEP" in
     KB_LAYOUT="$_v"
     STEP=$(( STEP + 1 )) ;;
 
-7) # Hostname + username
+7) # Hostname + username + shell
     _v=$(whiptail --title "$TITLE" --inputbox "Hostname  [7/$STEP_MAX]" 10 60 "${HOSTNAME:-artix}" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     [[ "$_v" =~ ^[a-zA-Z0-9\-]+$ ]] && HOSTNAME="$_v" || \
@@ -295,6 +308,13 @@ case "$STEP" in
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     [[ "$_v" =~ ^[a-z][a-z0-9_\-]*$ ]] && USERNAME="$_v" || \
         { whiptail --title "$TITLE" --msgbox "Invalid username. Use lowercase letters, numbers, _ or -." 8 55; continue; }
+    _v=$(whiptail --title "$TITLE" --menu "Login Shell  [7/$STEP_MAX]" 11 60 4 \
+        "bash"   "Bash — POSIX shell" \
+        "zsh"    "Zsh — powerful interactive shell" \
+        "fish"   "Fish — user-friendly shell" \
+        "sh"     "Sh — minimal POSIX shell" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    USER_SHELL="/bin/$_v"
     ROOTPW=$(get_password "Root Password  [7/$STEP_MAX]")
     USERPW=$(get_password "User Password  [7/$STEP_MAX]")
     # Validate passwords aren't empty
@@ -397,6 +417,95 @@ case "$STEP" in
             GPU=$(echo "$GPU" | sed 's/nvidia-dkms/nouveau/g')
         fi
     fi
+    
+    # Detect Broadcom WiFi hardware and prompt for firmware
+    if lspci 2>/dev/null | grep -qi "broadcom.*wireless\|bcm.*wireless"; then
+        if whiptail --title "$TITLE" --yesno \
+            "Broadcom WiFi Detected  [10/$STEP_MAX]\n\nInstall broadcom-wl-dkms driver?\n\nYes = proprietary driver (most compatible)\nNo = use open source alternatives (may not work on all chips)" \
+            11 70; then
+            GPU="$GPU broadcom-wl-dkms"
+        fi
+    fi
+    
+    # Detect other common firmware needs
+    _fw_pkgs=""
+    
+    # Intel WiFi (iwlwifi)
+    if lspci 2>/dev/null | grep -qi "intel.*wireless\|iwlwifi"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Qualcomm/Atheros WiFi
+    if lspci 2>/dev/null | grep -qi "qualcomm\|atheros.*wireless\|ath9k\|ath10k"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Realtek WiFi/Ethernet
+    if lspci 2>/dev/null | grep -qi "realtek.*wireless\|rtl.*\|r8"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # NVIDIA GPU firmware (nouveau, nvenc)
+    if lspci 2>/dev/null | grep -qi "nvidia.*vga\|nvidia.*3d"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # AMD/ATI GPU firmware
+    if lspci 2>/dev/null | grep -qi "amd.*vga\|ati.*vga\|radeon"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Sound cards that need firmware
+    if lspci 2>/dev/null | grep -qi "sigmatel\|cirrus\|conexant"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Add detected firmware packages to GPU string (will be installed with GPU)
+    if [ -n "$_fw_pkgs" ]; then
+        _detected=$(echo "$_fw_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
+        if whiptail --title "$TITLE" --yesno \
+            "Firmware Detected\n\nAuto-detected hardware firmware needed:\n$_detected\n\nInstall?" \
+            11 70; then
+            GPU="$GPU $_detected"
+        fi
+    fi
+    
+    # Detect other useful packages based on hardware
+    _extra_pkgs=""
+    
+    # RAID/LVM detection
+    if lsblk 2>/dev/null | grep -qi "raid\|dm-"; then
+        _extra_pkgs="$_extra_pkgs mdadm lvm2"
+    fi
+    
+    # NVMe-specific tools
+    if lsblk 2>/dev/null | grep -qi "nvme"; then
+        _extra_pkgs="$_extra_pkgs nvme-cli"
+    fi
+    
+    # Encryption utilities already included if ENCRYPT=1, but ensure cryptsetup
+    if [ "$ENCRYPT" = "1" ]; then
+        _extra_pkgs="$_extra_pkgs cryptsetup"
+    fi
+    
+    # Add to basestrap if any detected
+    if [ -n "$_extra_pkgs" ]; then
+        EXTRA_PKGS=$(echo "$_extra_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
+    fi
+    
+    # Audio daemon choice (only if desktop DE selected)
+    if [ "$INSTALL_TYPE" = "DE" ] && echo "$DE_CHOICES" | grep -qvE "CLI"; then
+        _v=$(whiptail --title "$TITLE" --menu \
+            "Audio Daemon  [10/$STEP_MAX]\n\nSelect audio server for sound handling:" 13 70 3 \
+            "pipewire"   "PipeWire — modern, low-latency (recommended)" \
+            "pulseaudio" "PulseAudio — traditional, widely compatible" \
+            "alsa"       "ALSA only — minimal, no daemon" \
+            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+        AUDIO_DAEMON="$_v"
+    else
+        AUDIO_DAEMON="none"
+    fi
+    
     STEP=$(( STEP + 1 )) ;;
 
 11) # Bootloader
@@ -458,6 +567,33 @@ esac
 done
 
 fi  # end TEST_MODE=0 Q&A
+
+# =========================
+# PRE-INSTALL SUMMARY
+# =========================
+if [ "$TEST_MODE" = "0" ]; then
+    gauge 5 "Preparing installation..."
+    
+    _summary="INSTALLATION SUMMARY\n\n⚠️  WARNING: All data on $DISK will be erased!\n\n"
+    _summary="$_summary━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    _summary="$_summary✓ Disk: $DISK\n"
+    _summary="$_summary✓ Init: $INIT\n"
+    _summary="$_summary✓ Filesystem: $FS\n"
+    _summary="$_summary✓ Swap: $SWAP\n"
+    _summary="$_summary✓ Encryption: $([ "$ENCRYPT" = "1" ] && echo "LUKS2" || echo "None")\n"
+    _summary="$_summary✓ Bootloader: $BOOTLOADER\n"
+    _summary="$_summary✓ Kernel: $FIRST_KERNEL\n"
+    _summary="$_summary✓ DE/WM: $(echo "$DE_CHOICES" | tr '\n' ' ')\n"
+    _summary="$_summary✓ Hostname: $HOSTNAME\n"
+    _summary="$_summary✓ User: $USERNAME\n"
+    _summary="$_summary━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nReview the above. Continue?"
+    
+    if ! whiptail --title "$TITLE" --yesno "$_summary" 22 72; then
+        echo ""
+        echo "Installation cancelled by user at summary screen"
+        exit 1
+    fi
+fi
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
@@ -782,10 +918,33 @@ AUDIO_PKGS=""
 AUDIO_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland"
 for _de in $AUDIO_DES; do
     if echo "$DE_CHOICES" | grep -qw "$_de"; then
-        AUDIO_PKGS="pipewire pipewire-pulse pipewire-alsa wireplumber"
+        # Select audio daemon based on user choice
+        case "$AUDIO_DAEMON" in
+            pipewire)
+                AUDIO_PKGS="pipewire pipewire-pulse pipewire-alsa wireplumber"
+                ;;
+            pulseaudio)
+                AUDIO_PKGS="pulseaudio pulseaudio-alsa"
+                ;;
+            alsa)
+                # ALSA only — minimal, no daemon
+                AUDIO_PKGS=""
+                ;;
+        esac
         break
     fi
 done
+
+# =========================
+gauge 10 "Ranking mirrors for best speeds..."
+# =========================
+if command -v reflector &>/dev/null; then
+    # Use reflector to rank mirrors — try common regions for fast downloads
+    reflector --country US --country DE --country NL --country FR \
+        --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || true
+else
+    echo "reflector not available, using default mirror list"
+fi
 
 # =========================
 gauge 15 "Configuring repositories..."
@@ -856,7 +1015,8 @@ _do_basestrap() {
         ttf-dejavu ttf-liberation noto-fonts \
         $XORG_PKGS \
         $AUDIO_PKGS \
-        $GPU
+        $GPU \
+        $EXTRA_PKGS
 }
 if ! _do_basestrap "$FIRST_KERNEL"; then
     echo "==> $FIRST_KERNEL failed, falling back to linux"
@@ -1044,7 +1204,7 @@ USERPW_B64=$(printf '%s' "$USERPW" | base64)
 # Set root password — pipe directly into chpasswd, never in bash -c where it's visible in ps aux
 printf "root:%s\n" "$(printf '%s' "$ROOTPW_B64" | base64 -d)" | artix-chroot /mnt chpasswd
 gauge 55 "Creating user account..."
-artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
+artix-chroot /mnt bash -c "useradd -m -s '$USER_SHELL' -G wheel,audio,video,storage,input '$USERNAME'"
 # Set user password — pipe directly into chpasswd, never in bash -c where it's visible in ps aux
 printf "%s:%s\n" "$USERNAME" "$(printf '%s' "$USERPW_B64" | base64 -d)" | artix-chroot /mnt chpasswd
 # Securely unset password variables from memory
@@ -1249,7 +1409,7 @@ for _de in $AUDIO_DES_CHECK; do
 done
 
 mkdir -p /mnt/usr/local/bin
-if [ "$NEED_AUDIO" = "1" ]; then
+if [ "$NEED_AUDIO" = "1" ] && [ "$AUDIO_DAEMON" = "pipewire" ]; then
 
 cat > /mnt/usr/local/bin/start-pipewire << 'EOF'
 #!/bin/bash
@@ -1288,7 +1448,7 @@ Exec=/usr/local/bin/start-pipewire
 X-KDE-autostart-phase=1
 EOF
 
-# Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
+fi# Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
 # in that directory into broken .desktop files pointing to wrong paths
 
 if echo "$DE_CHOICES" | grep -qw "Moksha"; then
@@ -1509,7 +1669,7 @@ for DE in $DE_CHOICES; do
             if [ "$_de_ok" = "1" ]; then
                 mkdir -p /mnt/home/"$USERNAME"/.config/hypr
                 cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
-exec-once = /usr/local/bin/start-pipewire
+$([ "$AUDIO_DAEMON" = "pipewire" ] && echo "exec-once = /usr/local/bin/start-pipewire")
 HYPREOF
                 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
                 mkdir -p /mnt/usr/share/wayland-sessions
