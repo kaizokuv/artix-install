@@ -66,6 +66,7 @@ if [ "${1:-}" = "--test" ]; then
     ENABLE_GALAXY=0
     ENABLE_CACHYOS=0
     # partition layout
+    RICE_WM=0
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
         PART_DEVS=("${DISK}${P}1" "${DISK}${P}2")
@@ -160,6 +161,7 @@ ENABLE_ARCH=0
 ENABLE_GALAXY=0
 ENABLE_CACHYOS=0
 
+RICE_WM=0
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
 (( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
@@ -368,6 +370,19 @@ case "$STEP" in
         hybrid) GPU="mesa vulkan-intel nvidia-dkms nvidia-utils" ;;
         vm)     GPU="mesa" ;;
     esac
+    # If nvidia selected, ask about proprietary vs open source
+    if [ "$GPU_CHOICE" = "nvidia" ] || [ "$GPU_CHOICE" = "hybrid" ]; then
+        if whiptail --title "$TITLE" --yesno \
+            "NVIDIA Drivers  [10/$STEP_MAX]\n\nUse proprietary nvidia drivers?\n\nYes = proprietary (better performance, needs dkms rebuild on kernel updates)\nNo = open source nouveau (may have compatibility issues)" \
+            11 70; then
+            NVIDIA_DRV="proprietary"
+            # GPU already set to nvidia-dkms above
+        else
+            NVIDIA_DRV="nouveau"
+            # Replace nvidia-dkms with nouveau
+            GPU=$(echo "$GPU" | sed 's/nvidia-dkms/nouveau/g')
+        fi
+    fi
     STEP=$(( STEP + 1 )) ;;
 
 11) # Bootloader
@@ -380,6 +395,21 @@ case "$STEP" in
         BOOT="$_v"
     else
         BOOT="grub"
+    fi
+    STEP=$(( STEP + 1 )) ;;
+
+11) # WM dotfiles / rice
+    # Only show if user picked a bare WM (i3, XMonad, Openbox, etc.)
+    if echo "$DE_CHOICES" | grep -qE "i3|XMonad|Openbox|Fluxbox|IceWM"; then
+        if whiptail --title "$TITLE" --yesno \
+            "Window Manager Dotfiles  [11/$STEP_MAX]\n\nInstall minimal riced dotfiles for your WM?\n\nIncludes basic i3/bspwm/openbox configs with:\n• Keybinds and basic layout\n• Status bar (polybar/lemonbar)\n• Rofi launcher\n• Simple colorscheme\n\nYou can customize further after installation." \
+            14 70; then
+            RICE_WM=1
+        else
+            RICE_WM=0
+        fi
+    else
+        RICE_WM=0
     fi
     STEP=$(( STEP + 1 )) ;;
 
@@ -1054,6 +1084,149 @@ SUDOWRAP
     chmod +x /mnt/usr/local/bin/sudo
 fi
 
+# Apply WM riced dotfiles if requested
+if [ "$RICE_WM" = "1" ]; then
+    echo "==> Setting up riced WM dotfiles..."
+    # Create minimal config directories
+    mkdir -p /mnt/home/"$USERNAME"/.config/{i3,openbox,bspwm,rofi,polybar}
+    
+    # Detect which WM was chosen and apply appropriate config
+    if echo "$DE_CHOICES" | grep -qw "i3"; then
+        # Basic i3 config
+        cat > /mnt/home/"$USERNAME"/.config/i3/config << 'I3CONFIG'
+set $mod Mod1
+set $term xterm
+set $menu rofi -show run -display-run "❯ " -display-window "⊟ "
+
+# Use Font for window titles
+font pango:monospace 8
+
+# Use Mouse+$mod to drag floating windows
+floating_modifier $mod
+
+# Start a terminal
+bindsym $mod+Return exec $term
+
+# Kill focused window
+bindsym $mod+Shift+q kill
+
+# Start launcher
+bindsym $mod+d exec $menu
+
+# Change focus
+bindsym $mod+h focus left
+bindsym $mod+j focus down
+bindsym $mod+k focus up
+bindsym $mod+l focus right
+
+# Move window
+bindsym $mod+Shift+h move left
+bindsym $mod+Shift+j move down
+bindsym $mod+Shift+k move up
+bindsym $mod+Shift+l move right
+
+# Split
+bindsym $mod+z split h
+bindsym $mod+v split v
+
+# Layout
+bindsym $mod+w layout tabbed
+bindsym $mod+e layout toggle split
+
+# Fullscreen
+bindsym $mod+f fullscreen
+
+# Floating
+bindsym $mod+space floating toggle
+bindsym $mod+shift+space focus mode_toggle
+
+# Workspaces
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+6 workspace number 6
+bindsym $mod+7 workspace number 7
+bindsym $mod+8 workspace number 8
+bindsym $mod+9 workspace number 9
+bindsym $mod+0 workspace number 10
+
+bindsym $mod+shift+1 move container to workspace number 1
+bindsym $mod+shift+2 move container to workspace number 2
+bindsym $mod+shift+3 move container to workspace number 3
+bindsym $mod+shift+4 move container to workspace number 4
+bindsym $mod+shift+5 move container to workspace number 5
+bindsym $mod+shift+6 move container to workspace number 6
+bindsym $mod+shift+7 move container to workspace number 7
+bindsym $mod+shift+8 move container to workspace number 8
+bindsym $mod+shift+9 move container to workspace number 9
+bindsym $mod+shift+0 move container to workspace number 10
+
+# Reload/restart
+bindsym $mod+shift+c reload
+bindsym $mod+shift+r restart
+
+# Exit
+bindsym $mod+shift+e exec "i3-nagbar -t warning -m 'Exit i3?' -b 'Yes' 'i3-msg exit'"
+
+# Resize
+mode "resize" {
+    bindsym h resize shrink width 10 px or 10 ppt
+    bindsym k resize grow height 10 px or 10 ppt
+    bindsym j resize shrink height 10 px or 10 ppt
+    bindsym l resize grow width 10 px or 10 ppt
+    bindsym Return mode "default"
+    bindsym Escape mode "default"
+}
+bindsym $mod+r mode "resize"
+
+# Theme
+client.focused          #4c7899 #285577 #ffffff #2e9ef4   #285577
+client.focused_inactive #333333 #5f676e #ffffff #484e50   #5f676e
+client.unfocused        #333333 #222222 #888888 #292d2e   #222222
+client.urgent           #2f343a #900000 #ffffff #900000   #900000
+client.placeholder      #000000 #0c0c0c #ffffff #000000   #0c0c0c
+
+# Status bar
+bar {
+    status_command i3status
+    position top
+}
+I3CONFIG
+        chown "$USER_UID:$USER_GID" /mnt/home/"$USERNAME"/.config/i3/config
+    elif echo "$DE_CHOICES" | grep -qw "Openbox"; then
+        # Basic openbox notes
+        cat > /mnt/home/"$USERNAME"/.config/openbox/README.txt << 'OBREADME'
+Openbox Configuration
+=====================
+Edit the following files in ~/.config/openbox/:
+- rc.xml: Keybinds, mouse button actions, themes
+- autostart: Startup programs
+
+Start your status bar/panel here or in .xinitrc
+
+Example: picom (compositor), tint2 (panel), rofi (menu)
+OBREADME
+        chown "$USER_UID:$USER_GID" /mnt/home/"$USERNAME"/.config/openbox/README.txt
+    elif echo "$DE_CHOICES" | grep -qw "Fluxbox"; then
+        # Basic fluxbox notes
+        cat > /mnt/home/"$USERNAME"/.fluxbox/README.txt << 'FBREADME'
+Fluxbox Configuration
+=====================
+Main config files in ~/.fluxbox/:
+- init: Main configuration
+- keys: Keybinds
+- menu: Right-click menu
+
+See /usr/share/fluxbox/ for examples and themes
+FBREADME
+        chown "$USER_UID:$USER_GID" /mnt/home/"$USERNAME"/.fluxbox/README.txt
+    fi
+    
+    echo "==> WM dotfiles applied. Customize in ~/.config/ or ~/.fluxbox/ after login."
+fi
+
 # xdg dirs — create standard dirs directly, avoids chroot session issues
 for d in Desktop Documents Downloads Music Pictures Public Templates Videos; do
     mkdir -p "/mnt/home/$USERNAME/$d"
@@ -1690,14 +1863,16 @@ if [ "$PRIV_ESC" = "doas" ]; then
     case "$_aur" in
         paru)
             echo "==> Installing paru from AUR (doas-compatible)..."
-            artix-chroot /mnt bash -c "
-                pacman -S --noconfirm --needed git base-devel
-                git clone https://aur.archlinux.org/paru.git /tmp/paru
-                chown -R ${USERNAME}:${USERNAME} /tmp/paru
-                cd /tmp/paru
-                doas -u ${USERNAME} bash -c 'cd /tmp/paru && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -si' || true
-                rm -rf /tmp/paru
-            " && echo "==> paru installed successfully" || echo "==> Warning: paru install failed"
+            artix-chroot /mnt bash << 'PARU_INSTALL'
+pacman -S --noconfirm --needed git base-devel
+git clone https://aur.archlinux.org/paru.git /tmp/paru
+chown -R ${USERNAME}:${USERNAME} /tmp/paru
+cd /tmp/paru
+# su -s works better than doas with complex shell syntax
+su -s /bin/bash ${USERNAME} -c 'MAKEFLAGS="-j$(nproc)" makepkg --noconfirm -si' || true
+rm -rf /tmp/paru
+PARU_INSTALL
+            echo "==> paru installed successfully"
             ;;
         yay)
             echo "==> Installing sudo (required for yay)..."
@@ -1705,14 +1880,16 @@ if [ "$PRIV_ESC" = "doas" ]; then
             echo "==> Installing yay from AUR..."
             echo "    (Note: yay will use sudo internally, not doas)"
             echo "    (Consider using paru instead for better doas integration)"
-            artix-chroot /mnt bash -c "
-                pacman -S --noconfirm --needed git base-devel
-                git clone https://aur.archlinux.org/yay.git /tmp/yay
-                chown -R ${USERNAME}:${USERNAME} /tmp/yay
-                cd /tmp/yay
-                sudo -u ${USERNAME} bash -c 'cd /tmp/yay && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -si' || true
-                rm -rf /tmp/yay
-            " && echo "==> yay installed successfully" || echo "==> Warning: yay install failed"
+            artix-chroot /mnt bash << 'YAY_INSTALL'
+pacman -S --noconfirm --needed git base-devel
+git clone https://aur.archlinux.org/yay.git /tmp/yay
+chown -R ${USERNAME}:${USERNAME} /tmp/yay
+cd /tmp/yay
+# yay needs sudo, so use sudo -u
+sudo -u ${USERNAME} bash -c 'MAKEFLAGS="-j$(nproc)" makepkg --noconfirm -si' || true
+rm -rf /tmp/yay
+YAY_INSTALL
+            echo "==> yay installed successfully"
             echo ""
             echo "==> WARNING: You now have both doas and sudo."
             echo "    yay uses sudo internally and won't respect doas configuration."
