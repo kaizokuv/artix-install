@@ -297,6 +297,11 @@ case "$STEP" in
         { whiptail --title "$TITLE" --msgbox "Invalid username. Use lowercase letters, numbers, _ or -." 8 55; continue; }
     ROOTPW=$(get_password "Root Password  [7/$STEP_MAX]")
     USERPW=$(get_password "User Password  [7/$STEP_MAX]")
+    # Validate passwords aren't empty
+    if [ -z "$ROOTPW" ] || [ -z "$USERPW" ]; then
+        whiptail --title "$TITLE" --msgbox "Error: Passwords cannot be empty.\n\nPlease try again." 8 50
+        continue
+    fi
     STEP=$(( STEP + 1 )) ;;
 
 8) # Privilege escalation
@@ -315,21 +320,30 @@ case "$STEP" in
     DE_CHOICES="CLI"
     if [ "$INSTALL_TYPE" = "DE" ]; then
         DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
-            "Select DE/WM  [9/$STEP_MAX]  (space=toggle)" 20 70 11 \
-            "Plasma"   "KDE Plasma"              OFF \
-            "XFCE"     "XFCE4"                   OFF \
-            "LXQt"     "LXQt"                    OFF \
-            "i3"       "i3wm"                    OFF \
-            "XMonad"   "XMonad"                  OFF \
-            "Openbox"  "Openbox"                 OFF \
-            "Fluxbox"  "Fluxbox"                 OFF \
-            "IceWM"    "IceWM"                   OFF \
-            "Hyprland" "Hyprland (Wayland)"      OFF \
-            "Moksha"   "Moksha"                  OFF \
-            "Cosmic"   "COSMIC [EXPERIMENTAL]"   OFF \
+            "Select DE/WM  [9/$STEP_MAX]  (space=toggle)" 22 72 14 \
+            "Plasma"   "KDE Plasma — modern, feature-rich"                OFF \
+            "XFCE"     "XFCE4 — lightweight, classic"                     OFF \
+            "LXQt"     "LXQt — Qt-based lightweight"                       OFF \
+            "GNOME"    "GNOME — older version (no systemd support, unmaintained)" OFF \
+            "i3"       "i3wm — tiling"                                    OFF \
+            "bspwm"    "bspwm — binary space partition"                   OFF \
+            "XMonad"   "XMonad — functional, Haskell-based"              OFF \
+            "Openbox"  "Openbox — highly configurable"                    OFF \
+            "Fluxbox"  "Fluxbox — minimal, fast"                          OFF \
+            "IceWM"    "IceWM — retro, WindowMaker-style"                 OFF \
+            "Sway"     "Sway — i3-like on Wayland"                        OFF \
+            "Hyprland" "Hyprland — modern Wayland compositor"             OFF \
+            "Moksha"   "Moksha — Enlightenment fork"                      OFF \
+            "dwm"      "dwm — ultra-minimal (AUR, manual patching)"       OFF \
             3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
         DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
         [ -z "$DE_CHOICES" ] && DE_CHOICES="CLI"
+        # Warn about GNOME
+        if echo "$DE_CHOICES" | grep -qw "GNOME"; then
+            whiptail --title "$TITLE" --msgbox \
+                "⚠ GNOME Warning\n\nThis is an older, unmaintained version of GNOME.\nThe Artix project has dropped support because GNOME upstream is heavily dependent on systemd.\n\nYou can still use it, but:\n• Security updates may be limited\n• Some features may not work\n• Upstream patches won't be available\n\nConsider using XFCE, LXQt, or a window manager instead." \
+                14 70
+        fi
     fi
     STEP=$(( STEP + 1 )) ;;
 
@@ -398,7 +412,7 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-11) # WM dotfiles / rice
+12) # WM dotfiles / rice
     # Only show if user picked a bare WM (i3, XMonad, Openbox, etc.)
     if echo "$DE_CHOICES" | grep -qE "i3|XMonad|Openbox|Fluxbox|IceWM"; then
         if whiptail --title "$TITLE" --yesno \
@@ -413,7 +427,7 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-12) # Extra repos
+13) # Extra repos
     _repos=$(whiptail --title "$TITLE" --checklist \
         "Extra Repositories  [13/$STEP_MAX]" \
         14 72 4 \
@@ -429,7 +443,7 @@ case "$STEP" in
     echo "$_repos" | grep -qw cachyos  && ENABLE_CACHYOS=1 || ENABLE_CACHYOS=0
     STEP=$(( STEP + 1 )) ;;
 
-13) # Network
+14) # Network
     _v=$(whiptail --title "$TITLE" --menu "Network Stack  [14/$STEP_MAX]" 13 65 3 \
         "dhcpcd" "dhcpcd  — ethernet only, ~2MB" \
         "iwd"    "iwd     — wifi + ethernet, ~5MB" \
@@ -751,7 +765,7 @@ fi
 
 # icewm doesnt need mesa/llvm so skip gpu entirely to save ~200mb
 BARE_WM_ONLY=1
-for _de in Plasma XFCE LXQt Moksha Cosmic Hyprland i3 XMonad Openbox Fluxbox; do
+for _de in Plasma XFCE LXQt Moksha Hyprland i3 XMonad Openbox Fluxbox; do
     echo "$DE_CHOICES" | grep -qw "$_de" && BARE_WM_ONLY=0 && break
 done
 [ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
@@ -1511,47 +1525,25 @@ EOF
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix || _de_ok=0
             ;;
-        Cosmic)
-            artix-chroot /mnt bash -c "
-                grep -q '\[galaxy\]' /etc/pacman.conf || printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-                pacman -Sy --noconfirm
-            "
-            artix-chroot /mnt pacman -S --noconfirm \
-                cosmic-session cosmic-comp cosmic-greeter \
-                greetd "$(svc_pkg greetd)" \
-                xdg-desktop-portal-cosmic cosmic-terminal \
-                cosmic-files cosmic-text-editor cosmic-settings \
-                cosmic-screenshot cosmic-store upower pavucontrol || _de_ok=0
-            # Create cosmic-greeter system user if missing
-            artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
-                artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
-            # PAM elogind session registration
-            for pam_file in system-login greetd; do
-                PAM_PATH="/mnt/etc/pam.d/$pam_file"
-                if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind.so" "$PAM_PATH"; then
-                    echo "session required pam_elogind.so" >> "$PAM_PATH"
-                fi
-            done
-
-            # Stub out systemd dbus interfaces that cosmic-osd/cosmic-settings poll for
-            # Without these stubs they spin at 99% CPU waiting for a response that never comes
-            mkdir -p /mnt/usr/share/dbus-1/services
-            for svc in org.freedesktop.systemd1 org.freedesktop.login1; do
-                cat > "/mnt/usr/share/dbus-1/services/${svc}.service" << DBUSEOF
-[D-BUS Service]
-Name=${svc}
-Exec=/bin/false
-DBUSEOF
-            done
-            mkdir -p /mnt/etc/greetd
-            cat > /mnt/etc/greetd/config.toml << 'EOF'
-[terminal]
-vt = 1
-
-[default_session]
-command = "cosmic-comp cosmic-greeter"
-user = "cosmic-greeter"
-EOF
+        GNOME)
+            # GNOME is unmaintained in Artix (upstream requires systemd)
+            echo "==> Installing GNOME (unmaintained, no security updates)..."
+            artix-chroot /mnt pacman -S --noconfirm gnome gnome-extra || _de_ok=0
+            ;;
+        bspwm)
+            artix-chroot /mnt pacman -S --noconfirm bspwm sxhkd xterm dmenu rofi polybar || _de_ok=0
+            mkdir -p /mnt/home/"$USERNAME"/.config/{bspwm,sxhkd,polybar}
+            ;;
+        Sway)
+            # Sway is i3-like on Wayland
+            artix-chroot /mnt pacman -S --noconfirm sway waybar swaybg xdg-desktop-portal-wlr bemenu || _de_ok=0
+            mkdir -p /mnt/home/"$USERNAME"/.config/sway
+            ;;
+        dwm)
+            # dwm requires manual building and patching — complex for installer
+            echo "==> Note: dwm requires source patching and manual build"
+            echo "    Install base packages; build after installation"
+            artix-chroot /mnt pacman -S --noconfirm base-devel git || _de_ok=0
             ;;
     esac
     [ "$_de_ok" = "0" ] && _failed_des="$_failed_des $DE"
@@ -1842,6 +1834,9 @@ esac
 
 gauge 100 "Installation complete!"
 
+# Unmount filesystems before final menu to prevent lockups
+umount -R /mnt 2>/dev/null || true
+
 # Offer AUR helper setup before final options
 if [ "$PRIV_ESC" = "doas" ]; then
     echo ""
@@ -1858,37 +1853,44 @@ if [ "$PRIV_ESC" = "doas" ]; then
     case "$_aur" in
         paru)
             echo "==> Installing paru from AUR (doas-compatible)..."
-            artix-chroot /mnt bash << 'PARU_INSTALL'
+            echo "    (This may take several minutes - do not interrupt)"
+            timeout 1200 artix-chroot /mnt bash << PARU_INSTALL
 pacman -S --noconfirm --needed git base-devel
 git clone https://aur.archlinux.org/paru.git /tmp/paru
 chown -R ${USERNAME}:${USERNAME} /tmp/paru
 cd /tmp/paru
-# su -s works better than doas with complex shell syntax
-su -s /bin/bash ${USERNAME} -c 'MAKEFLAGS="-j$(nproc)" makepkg --noconfirm -si' || true
+su -s /bin/bash ${USERNAME} -c 'MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si' || true
 rm -rf /tmp/paru
 PARU_INSTALL
-            echo "==> paru installed successfully"
+            if [ $? -eq 124 ]; then
+                echo "==> Warning: paru build timed out (>20 mins). You can build it manually later."
+            else
+                echo "==> paru installed successfully"
+            fi
             ;;
         yay)
             echo "==> Installing sudo (required for yay)..."
-            artix-chroot /mnt pacman -S --noconfirm sudo
+            timeout 30 artix-chroot /mnt pacman -S --noconfirm sudo
             echo "==> Installing yay from AUR..."
             echo "    (Note: yay will use sudo internally, not doas)"
             echo "    (Consider using paru instead for better doas integration)"
-            artix-chroot /mnt bash << 'YAY_INSTALL'
+            echo "    (This may take several minutes - do not interrupt)"
+            timeout 1200 artix-chroot /mnt bash << YAY_INSTALL
 pacman -S --noconfirm --needed git base-devel
 git clone https://aur.archlinux.org/yay.git /tmp/yay
 chown -R ${USERNAME}:${USERNAME} /tmp/yay
 cd /tmp/yay
-# yay needs sudo, so use sudo -u
-sudo -u ${USERNAME} bash -c 'MAKEFLAGS="-j$(nproc)" makepkg --noconfirm -si' || true
+sudo -u ${USERNAME} bash -c 'MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si' || true
 rm -rf /tmp/yay
 YAY_INSTALL
-            echo "==> yay installed successfully"
-            echo ""
-            echo "==> WARNING: You now have both doas and sudo."
-            echo "    yay uses sudo internally and won't respect doas configuration."
-            echo "    If you want pure doas, reinstall paru instead."
+            if [ $? -eq 124 ]; then
+                echo "==> Warning: yay build timed out (>20 mins). You can build it manually later."
+            else
+                echo ""
+                echo "==> WARNING: You now have both doas and sudo."
+                echo "    yay uses sudo internally and won't respect doas configuration."
+                echo "    If you want pure doas, reinstall paru instead."
+            fi
             ;;
         *)
             echo "==> Skipping AUR helper installation."
@@ -1900,13 +1902,11 @@ YAY_INSTALL
     echo ""
 fi
 
-umount -R /mnt 2>/dev/null || true
-
 _end=$(whiptail --title "$TITLE" --menu \
     "Installation complete!\n\nWhat would you like to do?" \
     12 60 3 \
     "reboot" "Reboot into the new system" \
-    "chroot" "Chroot into the installed system" \
+    "shell"  "Drop to shell" \
     "exit"   "Exit to live environment" \
     3>&1 1>&2 2>&3) || _end="exit"
 
@@ -1914,22 +1914,12 @@ case "$_end" in
     reboot)
         reboot
         ;;
-    chroot)
-        # Remount everything for chroot
-        mount "${ROOT}" /mnt 2>/dev/null || true
-        [ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot 2>/dev/null || true
-        for _em in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
-            [ -z "$_em" ] && continue
-            _em_dev="${_em%%:*}"; _em_mp="${_em##*:}"
-            mount "$_em_dev" "/mnt${_em_mp}" 2>/dev/null || true
-        done
+    shell)
         echo ""
-        echo "==> Entering chroot. Type 'exit' or Ctrl-D to leave."
-        echo ""
-        artix-chroot /mnt /bin/bash
-        umount -R /mnt 2>/dev/null || true
+        echo "You are now at the shell. Type 'exit' to return."
+        /bin/bash
         ;;
     *)
-        echo "Exiting. You can reboot manually when ready."
+        echo "Exiting. You can reboot manually with 'reboot' command when ready."
         ;;
 esac
