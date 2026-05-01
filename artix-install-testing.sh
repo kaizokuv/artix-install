@@ -2039,8 +2039,13 @@ PARU_INSTALL
 pacman -S --noconfirm --needed git base-devel
 git clone https://aur.archlinux.org/yay.git /tmp/yay
 chown -R ${USERNAME}:${USERNAME} /tmp/yay
-cd /tmp/yay
-sudo -u ${USERNAME} bash -c 'MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si' || true
+if command -v doas &>/dev/null; then
+    doas -u ${USERNAME} bash -c 'cd /tmp/yay && MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si'
+elif command -v sudo &>/dev/null; then
+    sudo -u ${USERNAME} bash -c 'cd /tmp/yay && MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si'
+else
+    echo "==> No sudo / doas found — cannot build yay as non-root"
+fi || true
 rm -rf /tmp/yay
 YAY_INSTALL
             if [ $? -eq 124 ]; then
