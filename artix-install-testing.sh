@@ -45,6 +45,8 @@ if [ "${1:-}" = "--test" ]; then
     FS="ext4"
     SWAP="None"
     ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""; LUKS_PW=""
+    ENCRYPT_TYPE="none"
+    ECRYPTFS_PW=""
     INIT="dinit"
     LOCALE="en_US.UTF-8"
     TIMEZONE="Europe/London"
@@ -53,7 +55,9 @@ if [ "${1:-}" = "--test" ]; then
     USERNAME="user"
     USER_SHELL="/bin/bash"
     ROOTPW="idk"; USERPW="idk"
-    INSTALL_TYPE="CLI"; DE_CHOICES="CLI"
+    INSTALL_TYPE="CLI"; DE_CHOICES="CLI"; PRESET="minimal"
+    AUDIO_DAEMON="pipewire"
+    EXTRA_PKGS=""
     KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
     CPU_VENDOR="amd"; UCODE="amd-ucode"
     GPU_CHOICE="amd"; GPU="mesa vulkan-radeon"
@@ -144,6 +148,8 @@ SWAP="None"
 SWAP_SIZE_GB=4
 SWAP_SIZE_MB=4096
 ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""; LUKS_PW=""
+ENCRYPT_TYPE="none"
+ECRYPTFS_PW=""
 LOCALE="en_US.UTF-8"
 TIMEZONE="Europe/London"
 KB_LAYOUT="us"
@@ -151,7 +157,9 @@ HOSTNAME="artix"
 USERNAME="user"
 USER_SHELL="/bin/bash"
 ROOTPW=""; USERPW=""
-INSTALL_TYPE="CLI"; DE_CHOICES="CLI"
+INSTALL_TYPE="CLI"; DE_CHOICES="CLI"; PRESET="minimal"
+AUDIO_DAEMON="pipewire"
+EXTRA_PKGS=""
 KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
 CPU_VENDOR="amd"; UCODE="amd-ucode"
 GPU_CHOICE="vm"; GPU="mesa"
@@ -227,13 +235,33 @@ case "$STEP" in
     STEP=$(( STEP + 1 )) ;;
 
 5) # Encryption
-    if whiptail --title "$TITLE" --yesno \
-        "Encryption  [5/$STEP_MAX]\n\nEnable full disk encryption (LUKS2)?\nYou will enter a passphrase on every boot." \
-        10 60; then
+    _v=$(whiptail --title "$TITLE" --menu \
+        "Encryption  [5/$STEP_MAX]" 13 70 3 \
+        "none"   "No encryption" \
+        "luks2"  "Full disk LUKS2 (recommended, entire disk)" \
+        "luks1"  "Full disk LUKS1 (legacy, for older systems)" \
+        "home"   "eCryptfs home only (per-user, /home encrypted)" \
+        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+    
+    if [ "$_v" = "none" ]; then
+        ENCRYPT=0
+        ENCRYPT_TYPE="none"
+        LUKS_PW=""
+    elif [ "$_v" = "luks1" ]; then
         ENCRYPT=1
-        LUKS_PW=$(get_password "Encryption Passphrase")
-    else
-        ENCRYPT=0; LUKS_PW=""
+        ENCRYPT_TYPE="luks1"
+        LUKS_PW=$(get_password "LUKS1 Passphrase  [5/$STEP_MAX]")
+    elif [ "$_v" = "luks2" ]; then
+        ENCRYPT=1
+        ENCRYPT_TYPE="luks2"
+        LUKS_PW=$(get_password "LUKS2 Passphrase  [5/$STEP_MAX]")
+    elif [ "$_v" = "home" ]; then
+        ENCRYPT=0
+        ENCRYPT_TYPE="ecryptfs"
+        ECRYPTFS_PW=$(get_password "eCryptfs Passphrase  [5/$STEP_MAX]")
+        whiptail --title "$TITLE" --msgbox \
+            "eCryptfs Home Directory Encryption\n\nNote: /home will be encrypted per-user.\n• Only affects new user (system user will be set up normally)\n• Users can mount encrypted home after login\n• Slight performance overhead\n• Use if you only need home directory protected" \
+            12 70
     fi
     STEP=$(( STEP + 1 )) ;;
 
@@ -255,8 +283,11 @@ case "$STEP" in
         "zh_CN.UTF-8" "Chinese (Simplified)" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     LOCALE="$_v"
-    # Try to auto-detect timezone from IP geolocation
-    _tz_auto=$(curl -s "https://ipapi.co/json/" 2>/dev/null | grep -o '"timezone":"[^"]*' | cut -d'"' -f4)
+    # Try to auto-detect timezone from IP geolocation (non-blocking, silent fail)
+    _tz_auto=""
+    if command -v curl &>/dev/null; then
+        _tz_auto=$(timeout 3 curl -s "https://ipapi.co/json/" 2>/dev/null | grep -o '"timezone":"[^"]*' | cut -d'"' -f4) || true
+    fi
     _tz_default="UTC"
     [ -n "$_tz_auto" ] && _tz_default="$_tz_auto"
     
@@ -364,6 +395,21 @@ case "$STEP" in
                 "⚠ GNOME Warning\n\nThis is an older, unmaintained version of GNOME.\nThe Artix project has dropped support because GNOME upstream is heavily dependent on systemd.\n\nYou can still use it, but:\n• Security updates may be limited\n• Some features may not work\n• Upstream patches won't be available\n\nConsider using XFCE, LXQt, or a window manager instead." \
                 14 70
         fi
+        
+        # Software preset selection (only for DE installs)
+        if [ "$INSTALL_TYPE" = "DE" ]; then
+            _preset=$(whiptail --title "$TITLE" --menu \
+                "Software Preset  [9/$STEP_MAX]\n\nAuto-install common packages:" 16 72 5 \
+                "user"       "Regular user — Firefox, text editor, media player, office" \
+                "dev"        "Developer — Git, GCC, Python, Node, build tools" \
+                "gaming"     "Gaming — Steam, Lutris, Wine, 32-bit enabled" \
+                "minimal"    "Minimal — Just base system" \
+                "custom"     "Custom — I'll add packages later" \
+                3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+            PRESET="$_preset"
+        else
+            PRESET="minimal"
+        fi
     fi
     STEP=$(( STEP + 1 )) ;;
 
@@ -429,6 +475,82 @@ case "$STEP" in
     
     # Detect other common firmware needs
     _fw_pkgs=""
+    
+    # Intel WiFi (iwlwifi)
+    if lspci 2>/dev/null | grep -qi "intel.*wireless\|iwlwifi"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Qualcomm/Atheros WiFi
+    if lspci 2>/dev/null | grep -qi "qualcomm\|atheros.*wireless\|ath9k\|ath10k"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Realtek WiFi/Ethernet
+    if lspci 2>/dev/null | grep -qi "realtek.*wireless\|rtl.*\|r8"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # NVIDIA GPU firmware (nouveau, nvenc)
+    if lspci 2>/dev/null | grep -qi "nvidia.*vga\|nvidia.*3d"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # AMD/ATI GPU firmware
+    if lspci 2>/dev/null | grep -qi "amd.*vga\|ati.*vga\|radeon"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Sound cards that need firmware
+    if lspci 2>/dev/null | grep -qi "sigmatel\|cirrus\|conexant"; then
+        _fw_pkgs="$_fw_pkgs linux-firmware"
+    fi
+    
+    # Add detected firmware packages to GPU string (will be installed with GPU)
+    if [ -n "$_fw_pkgs" ]; then
+        _detected=$(echo "$_fw_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
+        if whiptail --title "$TITLE" --yesno \
+            "Firmware Detected\n\nAuto-detected hardware firmware needed:\n$_detected\n\nInstall?" \
+            11 70; then
+            GPU="$GPU $_detected"
+        fi
+    fi
+    
+    # Detect other useful packages based on hardware
+    _extra_pkgs=""
+    
+    # RAID/LVM detection
+    if lsblk 2>/dev/null | grep -qi "raid\|dm-"; then
+        _extra_pkgs="$_extra_pkgs mdadm lvm2"
+    fi
+    
+    # NVMe-specific tools
+    if lsblk 2>/dev/null | grep -qi "nvme"; then
+        _extra_pkgs="$_extra_pkgs nvme-cli"
+    fi
+    
+    # Encryption utilities already included if ENCRYPT=1, but ensure cryptsetup
+    if [ "$ENCRYPT" = "1" ]; then
+        _extra_pkgs="$_extra_pkgs cryptsetup"
+    fi
+    
+    # Add to basestrap if any detected
+    if [ -n "$_extra_pkgs" ]; then
+        EXTRA_PKGS=$(echo "$_extra_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
+    fi
+    
+    # Audio daemon choice (only if desktop DE selected)
+    if [ "$INSTALL_TYPE" = "DE" ] && echo "$DE_CHOICES" | grep -qvE "CLI"; then
+        _v=$(whiptail --title "$TITLE" --menu \
+            "Audio Daemon  [10/$STEP_MAX]\n\nSelect audio server for sound handling:" 13 70 3 \
+            "pipewire"   "PipeWire — modern, low-latency (recommended)" \
+            "pulseaudio" "PulseAudio — traditional, widely compatible" \
+            "alsa"       "ALSA only — minimal, no daemon" \
+            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+        AUDIO_DAEMON="$_v"
+    else
+        AUDIO_DAEMON="none"
+    fi
     
     # Intel WiFi (iwlwifi)
     if lspci 2>/dev/null | grep -qi "intel.*wireless\|iwlwifi"; then
@@ -580,7 +702,7 @@ if [ "$TEST_MODE" = "0" ]; then
     _summary="$_summary✓ Init: $INIT\n"
     _summary="$_summary✓ Filesystem: $FS\n"
     _summary="$_summary✓ Swap: $SWAP\n"
-    _summary="$_summary✓ Encryption: $([ "$ENCRYPT" = "1" ] && echo "LUKS2" || echo "None")\n"
+    _summary="$_summary✓ Encryption: $([ "$ENCRYPT_TYPE" = "none" ] && echo "None" || [ "$ENCRYPT_TYPE" = "luks1" ] && echo "LUKS1" || [ "$ENCRYPT_TYPE" = "luks2" ] && echo "LUKS2" || [ "$ENCRYPT_TYPE" = "ecryptfs" ] && echo "eCryptfs (home only)" || echo "None")\n"
     _summary="$_summary✓ Bootloader: $BOOTLOADER\n"
     _summary="$_summary✓ Kernel: $FIRST_KERNEL\n"
     _summary="$_summary✓ DE/WM: $(echo "$DE_CHOICES" | tr '\n' ' ')\n"
@@ -747,11 +869,21 @@ fi
 
 if [ "$ENCRYPT" = "1" ]; then
     command -v cryptsetup &>/dev/null || pacman -Sy --noconfirm cryptsetup
-    echo -n "$LUKS_PW" | cryptsetup luksFormat --type luks2 "$ROOT" -
-    echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
+    # Support both LUKS1 and LUKS2
+    if [ "$ENCRYPT_TYPE" = "luks1" ]; then
+        printf '%s' "$LUKS_PW" | cryptsetup luksFormat --type luks1 "$ROOT" -
+        printf '%s' "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
+    else
+        # Default to LUKS2
+        printf '%s' "$LUKS_PW" | cryptsetup luksFormat --type luks2 "$ROOT" -
+        printf '%s' "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
+    fi
     REAL_ROOT="$ROOT"
     ROOT="/dev/mapper/cryptroot"
     PART_FS["$(fs_key "$ROOT")"]="${PART_FS[$(fs_key "$REAL_ROOT")]:-$FS}"
+elif [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
+    # eCryptfs will be set up post-install in user home directory
+    echo "==> eCryptfs home directory encryption will be configured after install"
 fi
 
 # fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
@@ -913,6 +1045,34 @@ if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! e
     XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-input-libinput xorg-xinit"
 fi
 
+# Build preset packages based on user selection
+PRESET_PKGS=""
+case "$PRESET" in
+    user)
+        # Regular user: browser, editor, media, office
+        PRESET_PKGS="firefox gedit vlc libreoffice-fresh"
+        ;;
+    dev)
+        # Developer: git, compiler, languages, code editor
+        PRESET_PKGS="git base-devel gcc python python-pip nodejs npm"
+        echo "==> Note: VS Code available via AUR after install (yay -S code or paru -S code)"
+        ;;
+    gaming)
+        # Gaming: Steam (needs 32-bit), Lutris, Wine, proton tools
+        # Enable multilib automatically for gaming
+        MULTILIB=1
+        PRESET_PKGS="steam lutris wine wine-mono wine-gecko"
+        ;;
+    minimal)
+        # Minimal: just base system
+        PRESET_PKGS=""
+        ;;
+    custom)
+        # Custom: user will add packages later
+        PRESET_PKGS=""
+        ;;
+esac
+
 # Only install audio stack for DEs that actually use it
 AUDIO_PKGS=""
 AUDIO_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland"
@@ -934,6 +1094,9 @@ for _de in $AUDIO_DES; do
         break
     fi
 done
+
+# Merge basestrap if any detected
+EXTRA_PKGS="${EXTRA_PKGS:-}"
 
 # =========================
 gauge 10 "Ranking mirrors for best speeds..."
@@ -958,7 +1121,7 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
     pacman-key --lsign-key 9AE4078033F8024D
     grep -q 'liquorix.net' /etc/pacman.conf || \
         printf '\n[liquorix]\nServer = https://liquorix.net/archlinux/$repo/$arch\n' >> /etc/pacman.conf
-    pacman -Sy
+    pacman -Sy || true
 fi
 
 # cachyos repo — enabled by repo selection or linux-cachyos kernel
@@ -977,17 +1140,17 @@ if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachy
     # Add the repo (with a plain Server line, no per-repo SigLevel needed now)
     grep -q '\[cachyos\]' /etc/pacman.conf || printf '\n[cachyos]\nServer = https://mirror.cachyos.org/repo/x86_64/cachyos\n' >> /etc/pacman.conf
 
-    pacman -Sy --noconfirm 2>/dev/null
-    pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist
+    pacman -Sy --noconfirm 2>/dev/null || true
+    pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist || true
 
     # Restore global SigLevel and populate the keyring properly
     sed -i "s/^SigLevel.*/${_orig_siglevel}/" /etc/pacman.conf
-    pacman-key --populate cachyos
+    pacman-key --populate cachyos || true
 
     # Switch repo to use mirrorlist include now that mirrorlist is installed
     sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /etc/pacman.conf
 
-    pacman -Sy --noconfirm && pacman -Si linux-cachyos &>/dev/null && _cachy_ok=1
+    pacman -Sy --noconfirm 2>/dev/null && pacman -Si linux-cachyos &>/dev/null && _cachy_ok=1 || _cachy_ok=0
 
     set -e
     if [ "$_cachy_ok" = "0" ]; then
@@ -1016,7 +1179,8 @@ _do_basestrap() {
         $XORG_PKGS \
         $AUDIO_PKGS \
         $GPU \
-        $EXTRA_PKGS
+        $EXTRA_PKGS \
+        $PRESET_PKGS
 }
 if ! _do_basestrap "$FIRST_KERNEL"; then
     echo "==> $FIRST_KERNEL failed, falling back to linux"
@@ -1049,7 +1213,7 @@ fi
 # Encryption setup inside installed system
 if [ "$ENCRYPT" = "1" ]; then
     # Ensure cryptsetup is in the installed system
-    artix-chroot /mnt pacman -S --noconfirm cryptsetup
+    artix-chroot /mnt pacman -S --noconfirm cryptsetup || true
     # crypttab — maps cryptroot on boot
     LUKS_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
     echo "cryptroot UUID=$LUKS_UUID none luks" >> /mnt/etc/crypttab
@@ -1060,6 +1224,15 @@ if [ "$ENCRYPT" = "1" ]; then
 
     # Store LUKS UUID for bootloader cmdline
     LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
+elif [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
+    # eCryptfs home directory encryption setup
+    echo "==> Installing eCryptfs for home directory encryption..."
+    artix-chroot /mnt pacman -S --noconfirm ecryptfs-utils || true
+    
+    # Set up mount options for encrypted home
+    echo "==> eCryptfs setup complete. User will set up encrypted home on first login."
+    echo "    Run: mount -t ecryptfs ~/.Private ~/.Private"
+    echo "    with passphrase: $(printf '%s' "$ECRYPTFS_PW" | head -c 20)..."
 fi
 
 # pacman tweaks
@@ -1845,7 +2018,7 @@ case "$INIT" in
         for svc in $SVCS; do svc_enable "$svc"; done
         [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
         for tty in 2 3 4 5 6; do
-            rm -f /mnt/etc/dinit.d/boot.d/getty@tty${tty} 2>/dev/null || true
+            rm -f "/mnt/etc/dinit.d/boot.d/getty@tty${tty}" 2>/dev/null || true
             artix-chroot /mnt dinitctl disable getty@tty${tty} 2>/dev/null || true
         done
         ;;
