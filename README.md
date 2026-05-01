@@ -15,13 +15,13 @@
 - CPU microcode and GPU drivers 
 - Keyboard layout, locale, timezone
 - Audio - pipewire, pulse or alsa
-- Mirros - autopics the fastest
+- Mirros - autopicks the fastest
 - Shell - zsh, bash or fish
 - Doas or Sudo
 - Xorg or Xlibre if youre using X
 - WiFi (carries your live session connection into the install if youre going to use network manager)
 - Aur(yay, paru or none) - availble in testing
-- Repos (lets you enable 32bit ones arch support cachyos and repos galaxy repos) -avalibe in stable to some degreee but the testing lets you enable more repos
+- Repos (lets you enable 32bit ones arch support cachyos and repos galaxy repos) - avalible in stable to some degreee but the testing lets you enable more repos
 - DE/WM(you can also pick cli dont worry): KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, Icewm, Fluxbox, the following are only avalibe in testing sway, dwm and bspwm
 - Prericing of your window manager: The rices are made by the cachyos devs I just stole them
 
