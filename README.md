@@ -20,7 +20,7 @@
 - Privellege escallation tool - Doas or Sudo 
 - Xorg or Xlibre if youre using X
 - WiFi (carries your live session connection into the install if youre going to use network manager) we also support iwd and dhcpcd
-- Aur(yay, paru or none) - availble in testing
+- Aur(yay, paru or none) - Only in Stable, Removed in testing and next releases due to issues with it
 - Repos (lets you enable 32bit ones arch support cachyos and repos galaxy repos) - avalible in stable to some degreee but the testing lets you enable more repos
 - DE/WM(you can also pick cli dont worry): KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, Icewm, Fluxbox, the following are only avalibe in testing sway, dwm and bspwm
 - Prericing of your window manager: The rices are made by the cachyos devs I just stole them
