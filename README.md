@@ -17,7 +17,7 @@
 - Audio - pipewire, pulse or alsa
 - Mirros - autopicks the fastest
 - Shell - zsh, bash or fish
-- Doas or Sudo
+- Privellege escallation tool - Doas or Sudo 
 - Xorg or Xlibre if youre using X
 - WiFi (carries your live session connection into the install if youre going to use network manager) we also support iwd and dhcpcd
 - Aur(yay, paru or none) - availble in testing
