@@ -1,3 +1,5 @@
+<img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/8ecc2c34-c05e-4582-9e10-2ee3913708f8" />
+
 # artix-install
 
 > A TUI installer written in Bash for Artix Linux — minimal, tailored, and convenient.
