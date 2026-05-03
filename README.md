@@ -30,7 +30,6 @@ The official installer gives you a working system. This one gives you *your* sys
 | **Networking** | NetworkManager (carries live WiFi into install), iwd, dhcpcd |
 | **Repos**(testing) | multilib, Arch, CachyOS, Galaxy |
 | **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm (untested) |
-| **WM prericing**(testing) | Minimal dotfiles which are taken from https://cachyos.org/ |
 
 
 ---
