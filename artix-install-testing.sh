@@ -18,7 +18,8 @@ trap 'echo ""
        umount -R /mnt 2>/dev/null || true
        cryptsetup close cryptroot 2>/dev/null || true
        echo ""
-       echo "To retry, run: bash artix-install.sh"
+       echo "To retry, run: curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install-testing.sh | bash"
+       echo "The stable one should work better, run: curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install.sh | bash"
        echo ""
        exit 1' ERR
 
