@@ -32,6 +32,9 @@ TITLE="Artix Master Installer"
 declare -A PART_FS
 EXTRA_MOUNTS=()
 
+# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
+fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
+
 # =========================
 # TEST / FAST MODE
 # =========================
@@ -559,9 +562,6 @@ if [ "$ENCRYPT" = "1" ]; then
     PART_FS["$(fs_key "$ROOT")"]="${PART_FS[$(fs_key "$REAL_ROOT")]:-$FS}"
 fi
 
-# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
-fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
-
 # format_part <device> <fstype>
 format_part() {
     local _dev="$1" _fs="${2:-ext4}"
@@ -822,6 +822,9 @@ fi
 
 # Encryption setup inside installed system
 if [ "$ENCRYPT" = "1" ]; then
+    # zstd mkinitcpio builds fail in some chroot environments — gzip is universal
+    sed -i 's/^#*COMPRESSION=.*/COMPRESSION="gzip"/' /mnt/etc/mkinitcpio.conf
+    grep -q '^COMPRESSION=' /mnt/etc/mkinitcpio.conf || echo 'COMPRESSION="gzip"' >> /mnt/etc/mkinitcpio.conf
     # Ensure cryptsetup is in the installed system
     artix-chroot /mnt pacman -S --noconfirm cryptsetup
     # crypttab — maps cryptroot on boot
