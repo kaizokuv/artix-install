@@ -36,7 +36,7 @@ The official installer gives you a working system. This one gives you *your* sys
 
 ## Known issues
 
-- The **stable ISO does not work** with this installer — **use the weekly ISO** instead
+- The **stable ISO does not work** with this installer — **use the weekly ISO** instead to clarify this is not our fault the stable version of the iso is just broken even with the manual installation
 ---
 
 ## Usage
