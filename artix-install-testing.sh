@@ -1759,7 +1759,7 @@ Exec=/usr/local/bin/start-pipewire
 X-KDE-autostart-phase=1
 EOF
 
-fi# Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
+fi # Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
 # in that directory into broken .desktop files pointing to wrong paths
 
 if echo "$DE_CHOICES" | grep -qw "Moksha"; then
@@ -1770,7 +1770,6 @@ Type=Application
 Name=PipeWire
 Exec=/usr/local/bin/start-pipewire
 EOF
-fi
 fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
