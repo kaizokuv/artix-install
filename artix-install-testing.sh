@@ -353,7 +353,7 @@ case "$STEP" in
         "ro" "Romanian"            "bg" "Bulgarian" \
         "gr" "Greek"               "tr" "Turkish" \
         "ua" "Ukrainian"           "dvorak" "Dvorak" \
-        "colemak" "Colemak" \      "workman" "Workman (QWERTY in vconsole)" \
+        "colemak" "Colemak"        "workman" "Workman (QWERTY in vconsole)" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     KB_LAYOUT="$_v"
     STEP=$(( STEP + 1 )) ;;
