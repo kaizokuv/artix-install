@@ -353,7 +353,7 @@ case "$STEP" in
         "ro" "Romanian"            "bg" "Bulgarian" \
         "gr" "Greek"               "tr" "Turkish" \
         "ua" "Ukrainian"           "dvorak" "Dvorak" \
-        "colemak" "Colemak" \
+        "colemak" "Colemak" \      "workman" "Workman (QWERTY in vconsole)" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     KB_LAYOUT="$_v"
     STEP=$(( STEP + 1 )) ;;
@@ -1621,28 +1621,50 @@ artix-chroot /mnt bash -c "echo '$LOCALE UTF-8' >> /etc/locale.gen && locale-gen
 artix-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
 gauge 45 "Setting timezone..."
 artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime && hwclock --systohc"
-
 # keyboard layout
 # Map X11 layout name to vconsole keymap (they differ for some layouts)
 case "$KB_LAYOUT" in
-    us-intl)   VC_KEYMAP="us" ;;
-    cz-qwerty) VC_KEYMAP="cz-qwerty" ;;
-    fr-bepo)   VC_KEYMAP="fr-bepo" ;;
-    br-abnt2)  VC_KEYMAP="br-abnt2" ;;
-    de-latin1) VC_KEYMAP="de-latin1" ;;
-    jp106)     VC_KEYMAP="jp106" ;;
-    *)         VC_KEYMAP="$KB_LAYOUT" ;;
+  us-intl) VC_KEYMAP="us" ;;
+  cz-qwerty) VC_KEYMAP="cz-qwerty" ;;
+  fr-bepo) VC_KEYMAP="fr-bepo" ;;
+  br-abnt2) VC_KEYMAP="br-abnt2" ;;
+  de-latin1) VC_KEYMAP="de-latin1" ;;
+  jp106) VC_KEYMAP="jp106" ;;
+  workman) VC_KEYMAP="us" ;; # There's no vconsole keymap for workman
+  *) VC_KEYMAP="$KB_LAYOUT" ;;
 esac
-cat > /mnt/etc/vconsole.conf << EOF
+cat >/mnt/etc/vconsole.conf <<EOF
 KEYMAP=$VC_KEYMAP
 FONT=default
 EOF
+
+# Some keyboard layouts are a variant of another layout
+# This isn't required to set for some layouts, but is generally recommended
+# See man xkeyboard-config, ~line 180
+XKB_VARIANT="" # An empty string sets the default variant
+case "$KB_LAYOUT" in
+  workman)
+    XKB_VARIANT="workman"
+    KB_LAYOUT="us"
+    ;;
+  dvorak)
+    XKB_VARIANT="dvorak"
+    KB_LAYOUT="us"
+    ;;
+  colemak)
+    XKB_VARIANT="colmak"
+    KB_LAYOUT="us"
+    ;;
+  *) XKB_VARIANT="" ;;
+esac
+
 mkdir -p /mnt/etc/X11/xorg.conf.d
-cat > /mnt/etc/X11/xorg.conf.d/00-keyboard.conf << KBEOF
+cat >/mnt/etc/X11/xorg.conf.d/00-keyboard.conf <<KBEOF
 Section "InputClass"
     Identifier "system-keyboard"
     MatchIsKeyboard "on"
     Option "XkbLayout" "$KB_LAYOUT"
+    Option "XkbVariant" "$XKB_VARIANT" 
 EndSection
 KBEOF
 
