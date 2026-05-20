@@ -1624,14 +1624,14 @@ artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime &
 # keyboard layout
 # Map X11 layout name to vconsole keymap (they differ for some layouts)
 case "$KB_LAYOUT" in
-  us-intl) VC_KEYMAP="us" ;;
-  cz-qwerty) VC_KEYMAP="cz-qwerty" ;;
-  fr-bepo) VC_KEYMAP="fr-bepo" ;;
-  br-abnt2) VC_KEYMAP="br-abnt2" ;;
-  de-latin1) VC_KEYMAP="de-latin1" ;;
-  jp106) VC_KEYMAP="jp106" ;;
-  workman) VC_KEYMAP="us" ;; # There's no vconsole keymap for workman
-  *) VC_KEYMAP="$KB_LAYOUT" ;;
+    us-intl) VC_KEYMAP="us" ;;
+    cz-qwerty) VC_KEYMAP="cz-qwerty" ;;
+    fr-bepo) VC_KEYMAP="fr-bepo" ;;
+    br-abnt2) VC_KEYMAP="br-abnt2" ;;
+    de-latin1) VC_KEYMAP="de-latin1" ;;
+    jp106) VC_KEYMAP="jp106" ;;
+    workman) VC_KEYMAP="us" ;; # There's no vconsole keymap for workman
+    *) VC_KEYMAP="$KB_LAYOUT" ;;
 esac
 cat >/mnt/etc/vconsole.conf <<EOF
 KEYMAP=$VC_KEYMAP
@@ -1643,19 +1643,19 @@ EOF
 # See man xkeyboard-config, ~line 180
 XKB_VARIANT="" # An empty string sets the default variant
 case "$KB_LAYOUT" in
-  workman)
-    XKB_VARIANT="workman"
-    KB_LAYOUT="us"
-    ;;
-  dvorak)
-    XKB_VARIANT="dvorak"
-    KB_LAYOUT="us"
-    ;;
-  colemak)
-    XKB_VARIANT="colmak"
-    KB_LAYOUT="us"
-    ;;
-  *) XKB_VARIANT="" ;;
+    workman)
+        XKB_VARIANT="workman"
+        KB_LAYOUT="us"
+        ;;
+    dvorak)
+        XKB_VARIANT="dvorak"
+        KB_LAYOUT="us"
+        ;;
+    colemak)
+        XKB_VARIANT="colmak"
+        KB_LAYOUT="us"
+        ;;
+    *) XKB_VARIANT="" ;;
 esac
 
 mkdir -p /mnt/etc/X11/xorg.conf.d
