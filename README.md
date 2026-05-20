@@ -14,8 +14,11 @@ The official installer gives you a working system. This one gives you *your* sys
 
 ## What it configures
 
+
+### Stable 
 | Category | Options |
 |---|---|
+| **Init system** | openrc, dinit, runit, s6 |
 | **Disk & Filesystem** | ext4, btrfs, xfs, f2fs, zfs and more |
 | **Kernels** | standard, lts, zen · custom: CachyOS, Liquorix |
 | **Bootloader** | GRUB, Limine, rEFInd |
@@ -24,14 +27,21 @@ The official installer gives you a working system. This one gives you *your* sys
 | **Locale** | keyboard layout, locale, timezone |
 | **Audio** | PipeWire, PulseAudio, ALSA |
 | **Mirrors** | auto-picks fastest on install |
-| **Shell**(testing) | bash, zsh, fish, sh |
 | **Privilege escalation** | doas or sudo |
 | **X11 server** | Xorg or XLibre |
 | **Networking** | NetworkManager (carries live WiFi into install), iwd, dhcpcd |
+| **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox  
+| **Repos** | lib32 |
+
+
+### Testing (on top of the stuff in stable of course)
+| Category | Options |
+|---|---|
+| **AUR**(testing) | yay |
+| **Greeters**(testing) | none, sddm, lightdm, tuigreet, regreet, nwg-hello, |
 | **Repos**(testing) | multilib, Arch, CachyOS, Galaxy |
-| **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm (untested) |
-
-
+| **Shell**(testing) | bash, zsh, fish, sh |
+| **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm, labwc, niri. wayfire, herbslutwm |
 ---
 
 ## Known issues
