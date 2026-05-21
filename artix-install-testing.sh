@@ -7,9 +7,9 @@ set -o pipefail
 
 # Enhanced error handler with context
 trap 'echo ""
-       echo "╔═══════════════════════════════════════════════╗"
-       echo "║         INSTALLATION FAILED                   ║"
-       echo "╚═══════════════════════════════════════════════╝"
+       echo "╔═════════════════════════════════════╗"
+       echo "║         INSTALLATION FAILED         ║"
+       echo "╚═════════════════════════════════════╝"
        echo ""
        echo "Error at line $LINENO"
        echo "Last command: $BASH_COMMAND"
@@ -718,19 +718,6 @@ case "$STEP" in
     # Add to basestrap if any detected
     if [ -n "$_extra_pkgs" ]; then
         EXTRA_PKGS=$(echo "$_extra_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
-    fi
-    
-    # Audio daemon choice (only if desktop DE selected)
-    if [ "$INSTALL_TYPE" = "DE" ] && echo "$DE_CHOICES" | grep -qvE "CLI"; then
-        _v=$(whiptail --title "$TITLE" --menu \
-            "Audio Daemon  [10/$STEP_MAX]\n\nSelect audio server for sound handling:" 13 70 3 \
-            "pipewire"   "PipeWire — modern, low-latency (recommended)" \
-            "pulseaudio" "PulseAudio — traditional, widely compatible" \
-            "alsa"       "ALSA only — minimal, no daemon" \
-            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-        AUDIO_DAEMON="$_v"
-    else
-        AUDIO_DAEMON="none"
     fi
     
     STEP=$(( STEP + 1 )) ;;
