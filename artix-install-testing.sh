@@ -1365,7 +1365,8 @@ gauge 20 "Installing base system (this takes a while)..."
 # =========================
 [ "$FS" = "btrfs" ] && EXTRA_PKGS="btrfs-progs $EXTRA_PKGS"
 if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
-    EXTRA_PKGS="snapper snap-pac $(svc_pkg snapper) $EXTRA_PKGS"
+    _snapper_svc_pkg=$([ "$INIT" != "dinit" ] && svc_pkg snapper || true)
+    EXTRA_PKGS="snapper snap-pac $_snapper_svc_pkg $EXTRA_PKGS"
 fi
 _do_basestrap() {
     local _k="$1"
@@ -1441,7 +1442,11 @@ elif [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
 fi
 
 if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
-    artix-chroot /mnt snapper -c root create-config /
+    umount /mnt/.snapshots 2>/dev/null || true
+    rmdir /mnt/.snapshots 2>/dev/null || true
+    artix-chroot /mnt snapper --no-dbus -c root create-config /
+    mkdir -p /mnt/.snapshots
+    mount -o subvol=@snapshots,compress=zstd,noatime "$ROOT" /mnt/.snapshots
     sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /mnt/etc/snapper/configs/root
     sed -i 's/^TIMELINE_CLEANUP=.*/TIMELINE_CLEANUP="yes"/' /mnt/etc/snapper/configs/root
     sed -i 's/^SUBVOLUME=.*/SUBVOLUME="\/\.snapshots"/' /mnt/etc/snapper/configs/root 2>/dev/null || true
