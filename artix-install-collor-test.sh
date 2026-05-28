@@ -862,9 +862,10 @@ else
         [ "$BTRFS_SNAPSHOTS" = "1" ] && btrfs subvolume create /mnt/@snapshots
         umount /mnt
         mount -o subvol=@,compress=zstd,noatime "$ROOT" /mnt
-        mkdir -p /mnt/{home,var,var/cache}
+        mkdir -p /mnt/{home,var}
         mount -o subvol=@home,compress=zstd,noatime "$ROOT" /mnt/home
         mount -o subvol=@var,compress=zstd,noatime "$ROOT" /mnt/var
+        mkdir -p /mnt/var/cache
         mount -o subvol=@cache,compress=zstd,noatime,nodatacow "$ROOT" /mnt/var/cache
         if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
             mkdir -p /mnt/.snapshots
