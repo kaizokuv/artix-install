@@ -7,9 +7,9 @@ set -o pipefail
 
 # Enhanced error handler with context
 trap 'echo ""
-       echo "╔═══════════════════════════════════════════════╗"
-       echo "║         INSTALLATION FAILED                   ║"
-       echo "╚═══════════════════════════════════════════════╝"
+       echo "╔═════════════════════════════════════╗"
+       echo "║         INSTALLATION FAILED         ║"
+       echo "╚═════════════════════════════════════╝"
        echo ""
        echo "Error at line $LINENO"
        echo "Last command: $BASH_COMMAND"
@@ -18,8 +18,7 @@ trap 'echo ""
        umount -R /mnt 2>/dev/null || true
        cryptsetup close cryptroot 2>/dev/null || true
        echo ""
-       echo "To retry, run: curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install-testing.sh | bash"
-       echo "The stable one should work better, run: curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install.sh | bash"
+       echo "To retry, run: bash artix-install.sh"
        echo ""
        exit 1' ERR
 
@@ -85,6 +84,7 @@ if [ "${1:-}" = "--test" ]; then
     BTRFS_SNAPSHOTS=0
     # partition layout
     USE_LIGHTDM=0
+    GREETER_CHOICE="none"
     PRIMARY_WM=""
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
@@ -101,7 +101,6 @@ if [ "${1:-}" = "--test" ]; then
     DUALBOOT=0; SWAP_PART=""
     EXTRA_MOUNTS=()
     ZFS_ROOT=0
-    BTRFS_SNAPSHOTS=0
     echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI"
 fi
 
@@ -143,7 +142,6 @@ pick_fs() {
 }
 
 # =========================
-# =========================
 # INIT SYSTEM
 # =========================
 RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -153,7 +151,7 @@ if [ "$TEST_MODE" = "0" ]; then
 # Step-based Q&A with back navigation
 # Each step sets variables; pressing Cancel goes back one step
 STEP=1
-STEP_MAX=13
+STEP_MAX=14
 
 # defaults (overwritten by each step)
 INIT="dinit"
@@ -189,6 +187,7 @@ ENABLE_CACHYOS=0
 BTRFS_SNAPSHOTS=0
 
 USE_LIGHTDM=0
+GREETER_CHOICE="none"
 PRIMARY_WM=""
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
@@ -353,7 +352,7 @@ case "$STEP" in
         "ro" "Romanian"            "bg" "Bulgarian" \
         "gr" "Greek"               "tr" "Turkish" \
         "ua" "Ukrainian"           "dvorak" "Dvorak" \
-        "colemak" "Colemak" \
+        "colemak" "Colemak"        "workman" "Workman (QWERTY in vconsole)" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     KB_LAYOUT="$_v"
     STEP=$(( STEP + 1 )) ;;
@@ -397,64 +396,111 @@ case "$STEP" in
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     INSTALL_TYPE="$_v"
     DE_CHOICES="CLI"
+    GREETER_CHOICE="none"
     if [ "$INSTALL_TYPE" = "DE" ]; then
         DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
-            "Select DE/WM  [9/$STEP_MAX]  (space=toggle)" 22 72 14 \
-            "Plasma"   "KDE Plasma — modern desktop environment"                OFF \
-            "XFCE"     "XFCE4 — lightweight, classic"                     OFF \
-            "LXQt"     "LXQt — Qt-based lightweight"                       OFF \
-            "GNOME"    "GNOME — older version (due to them being dependent on systemD)" OFF \
-            "i3"       "i3wm — the most basic tiling window manager"                                    OFF \
-            "bspwm"    "bspwm — mix of dwm and i3"                   OFF \
-            "XMonad"   "XMonad — the last honest window manager"              OFF \
-            "Openbox"  "Openbox — highly configurable"                    OFF \
-            "Fluxbox"  "Fluxbox — minimal, fast"                          OFF \
-            "IceWM"    "IceWM — retro and minimal"                 OFF \
-            "Sway"     "Sway — i3 but for Wayland"                        OFF \
-            "Hyprland" "Hyprland — modern Wayland compositor"             OFF \
-            "Moksha"   "Moksha — Enlightenment fork"                      OFF \
-            "dwm"      "dwm — suckless window manager for X"       OFF \
+            "Select DE/WM  [9/$STEP_MAX]  (space=toggle)" 24 74 20 \
+            "Plasma"        "KDE Plasma — modern desktop environment"                OFF \
+            "XFCE"          "XFCE4 — lightweight, classic"                           OFF \
+            "LXQt"          "LXQt — Qt-based lightweight"                             OFF \
+            "GNOME"         "GNOME — older version (depends on systemD, warned)"     OFF \
+            "i3"            "i3wm — the most basic tiling window manager"             OFF \
+            "bspwm"         "bspwm — mix of dwm and i3"                               OFF \
+            "herbstluftwm"  "herbstluftwm — manual tiling, scriptable"               OFF \
+            "XMonad"        "XMonad — the last honest window manager"                 OFF \
+            "Openbox"       "Openbox — highly configurable floating WM"               OFF \
+            "Fluxbox"       "Fluxbox — minimal, fast"                                 OFF \
+            "IceWM"         "IceWM — retro and minimal"                               OFF \
+            "dwm"           "dwm — suckless window manager for X"                    OFF \
+            "Sway"          "Sway — i3 but for Wayland"                               OFF \
+            "Hyprland"      "Hyprland — modern Wayland compositor"                   OFF \
+            "niri"          "niri — scrollable tiling Wayland compositor"             OFF \
+            "river"         "river — dynamic tiling Wayland compositor"              OFF \
+            "wayfire"       "wayfire — 3D Wayland compositor"                        OFF \
+            "labwc"         "labwc — openbox-like Wayland compositor"                OFF \
+            "Moksha"        "Moksha — Enlightenment fork"                             OFF \
             3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
         DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
         [ -z "$DE_CHOICES" ] && DE_CHOICES="CLI"
-        
-        # X server choice for bare WMs and DEs that need it
-        XSERVER_CHOICE="xlibre"
-        if echo "$DE_CHOICES" | grep -qwE "Sway|Hyprland"; then
-            # Wayland-only - no X server needed
-            XSERVER_CHOICE="none"
-        elif echo "$DE_CHOICES" | grep -qwE "dwm|i3|XMonad|Openbox|Fluxbox|bspwm|IceWM|Plasma|XFCE|LXQt"; then
-            # These need X server - ask which one
+
+        # Classify selections
+        _has_x11=0; _has_wayland=0
+        for _de in $DE_CHOICES; do
+            case "$_de" in
+                Sway|Hyprland|niri|river|wayfire|labwc) _has_wayland=1 ;;
+                CLI) ;;
+                *) _has_x11=1 ;;
+            esac
+        done
+
+        # X server choice (only if X11 WMs selected)
+        XSERVER_CHOICE="none"
+        if [ "$_has_x11" = "1" ]; then
             _xsrv=$(whiptail --title "$TITLE" --menu \
-                "X Server  [9/$STEP_MAX]\n\nChoose X server implementation:" 12 70 3 \
-                "xlibre" "XLibre — More modern fork of Xorg" \
-                "xorg"   "Xorg — Original X server" \
-                "none"   "None — Wayland or no graphical server" \
+                "X Server  [9/$STEP_MAX]\n\nX11 window managers detected.\nChoose X server implementation:" 12 70 3 \
+                "xlibre" "XLibre — modern fork of Xorg (recommended)" \
+                "xorg"   "Xorg — original X server" \
+                "none"   "None — skip X server" \
                 3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
             XSERVER_CHOICE="$_xsrv"
         fi
-        
+
+        # Greeter / session manager selection
+        if [ "$_has_x11" = "1" ] && [ "$_has_wayland" = "1" ]; then
+            # Mixed: greetd handles both best
+            _greeter=$(whiptail --title "$TITLE" --menu \
+                "Greeter / Login Manager  [9/$STEP_MAX]\n\nYou selected both X11 and Wayland WMs.\nChoose how to manage sessions:" 18 72 6 \
+                "none"          "None — autologin/startx (no graphical greeter)" \
+                "lightdm-gtk"   "LightDM + GTK greeter (X11, reliable)" \
+                "lightdm-slick" "LightDM + Slick greeter (X11, polished)" \
+                "sddm"          "SDDM — Qt-based, supports both X11/Wayland" \
+                "tuigreet"      "greetd + tuigreet (TUI, works everywhere)" \
+                "regreet"       "greetd + ReGreet (GTK, Wayland-native)" \
+                3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+            GREETER_CHOICE="$_greeter"
+        elif [ "$_has_x11" = "1" ]; then
+            # X11 only
+            _greeter=$(whiptail --title "$TITLE" --menu \
+                "Greeter / Login Manager  [9/$STEP_MAX]\n\nChoose how to start your X11 session:" 18 72 6 \
+                "none"          "None — autologin + startx (no greeter)" \
+                "lightdm-gtk"   "LightDM + GTK greeter (default, reliable)" \
+                "lightdm-slick" "LightDM + Slick greeter (polished look)" \
+                "sddm"          "SDDM — Qt-based greeter" \
+                "tuigreet"      "greetd + tuigreet (minimal TUI greeter)" \
+                3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+            GREETER_CHOICE="$_greeter"
+        elif [ "$_has_wayland" = "1" ]; then
+            # Wayland only
+            _greeter=$(whiptail --title "$TITLE" --menu \
+                "Greeter / Login Manager  [9/$STEP_MAX]\n\nChoose how to start your Wayland session:" 18 72 6 \
+                "none"          "None — autologin direct to compositor" \
+                "tuigreet"      "greetd + tuigreet (TUI, recommended for Wayland)" \
+                "regreet"       "greetd + ReGreet (GTK4, Wayland-native greeter)" \
+                "nwg-hello"     "greetd + nwg-hello (GTK3, designed for wlroots)" \
+                "sddm"          "SDDM — Qt-based, experimental Wayland support" \
+                3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+            GREETER_CHOICE="$_greeter"
+        fi
+
         # Warn about GNOME
         if echo "$DE_CHOICES" | grep -qw "GNOME"; then
             whiptail --title "$TITLE" --msgbox \
-                "⚠ GNOME Warning\n\nThis is an older, unmaintained version of GNOME.\nThe Artix project has dropped support because GNOME upstream is heavily dependent on systemd.\n\nYou can still use it, but:\n• Security updates may be limited\n• Some features may not work\n• Upstream patches won't be available\n\nConsider using XFCE, LXQt, or a window manager instead." \
-                14 70
+                "⚠ GNOME Warning\n\nThis is an older, unmaintained version of GNOME.\nThe Artix project dropped support because GNOME upstream\nis heavily dependent on systemd.\n\nConsider using XFCE, LXQt, or a window manager instead." \
+                13 70
         fi
-        
-        # Software preset selection (only for DE installs)
-        if [ "$INSTALL_TYPE" = "DE" ]; then
-            _preset=$(whiptail --title "$TITLE" --menu \
-                "Software Preset  [9/$STEP_MAX]\n\nAuto-install common packages:" 16 72 5 \
-                "user"       "Regular user — Firefox, text editor, media player, office" \
-                "dev"        "Developer — Git, GCC, Python, Node, build tools" \
-                "gaming"     "Gaming — Steam, Lutris, Wine, 32-bit enabled" \
-                "minimal"    "Minimal — Just base system" \
-                "custom"     "Custom — I'll add packages later" \
-                3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-            PRESET="$_preset"
-        else
-            PRESET="minimal"
-        fi
+
+        # Software preset (DE installs only)
+        _preset=$(whiptail --title "$TITLE" --menu \
+            "Software Preset  [9/$STEP_MAX]\n\nAuto-install common packages:" 16 72 5 \
+            "user"    "Regular user — Firefox, text editor, media player, office" \
+            "dev"     "Developer — Git, GCC, Python, Node, build tools" \
+            "gaming"  "Gaming — Steam, Lutris, Wine, 32-bit enabled" \
+            "minimal" "Minimal — Just base system" \
+            "custom"  "Custom — I'll add packages later" \
+            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+        PRESET="$_preset"
+    else
+        PRESET="minimal"
     fi
     STEP=$(( STEP + 1 )) ;;
 
@@ -610,82 +656,6 @@ case "$STEP" in
         AUDIO_DAEMON="none"
     fi
     
-    # Intel WiFi (iwlwifi)
-    if lspci 2>/dev/null | grep -qi "intel.*wireless\|iwlwifi"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Qualcomm/Atheros WiFi
-    if lspci 2>/dev/null | grep -qi "qualcomm\|atheros.*wireless\|ath9k\|ath10k"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Realtek WiFi/Ethernet
-    if lspci 2>/dev/null | grep -qi "realtek.*wireless\|rtl.*\|r8"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # NVIDIA GPU firmware (nouveau, nvenc)
-    if lspci 2>/dev/null | grep -qi "nvidia.*vga\|nvidia.*3d"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # AMD/ATI GPU firmware
-    if lspci 2>/dev/null | grep -qi "amd.*vga\|ati.*vga\|radeon"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Sound cards that need firmware
-    if lspci 2>/dev/null | grep -qi "sigmatel\|cirrus\|conexant"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Add detected firmware packages to GPU string (will be installed with GPU)
-    if [ -n "$_fw_pkgs" ]; then
-        _detected=$(echo "$_fw_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
-        if whiptail --title "$TITLE" --yesno \
-            "Firmware Detected\n\nAuto-detected hardware firmware needed:\n$_detected\n\nInstall?" \
-            11 70; then
-            GPU="$GPU $_detected"
-        fi
-    fi
-    
-    # Detect other useful packages based on hardware
-    _extra_pkgs=""
-    
-    # RAID/LVM detection
-    if lsblk 2>/dev/null | grep -qi "raid\|dm-"; then
-        _extra_pkgs="$_extra_pkgs mdadm lvm2"
-    fi
-    
-    # NVMe-specific tools
-    if lsblk 2>/dev/null | grep -qi "nvme"; then
-        _extra_pkgs="$_extra_pkgs nvme-cli"
-    fi
-    
-    # Encryption utilities already included if ENCRYPT=1, but ensure cryptsetup
-    if [ "$ENCRYPT" = "1" ]; then
-        _extra_pkgs="$_extra_pkgs cryptsetup"
-    fi
-    
-    # Add to basestrap if any detected
-    if [ -n "$_extra_pkgs" ]; then
-        EXTRA_PKGS=$(echo "$_extra_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
-    fi
-    
-    # Audio daemon choice (only if desktop DE selected)
-    if [ "$INSTALL_TYPE" = "DE" ] && echo "$DE_CHOICES" | grep -qvE "CLI"; then
-        _v=$(whiptail --title "$TITLE" --menu \
-            "Audio Daemon  [10/$STEP_MAX]\n\nSelect audio server for sound handling:" 13 70 3 \
-            "pipewire"   "PipeWire — modern, low-latency (recommended)" \
-            "pulseaudio" "PulseAudio — traditional, widely compatible" \
-            "alsa"       "ALSA only — minimal, no daemon" \
-            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-        AUDIO_DAEMON="$_v"
-    else
-        AUDIO_DAEMON="none"
-    fi
-    
     STEP=$(( STEP + 1 )) ;;
 
 11) # Bootloader
@@ -701,48 +671,22 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-12) # X11 WM Session Management (for bare X11 window managers)
+12) # X11 primary WM selection (only when no greeter and multiple bare X11 WMs)
     WM_COUNT=$(echo "$DE_CHOICES" | wc -w)
-    # Only relevant if user picked X11 WMs and X11 is available
-    if [ "$XSERVER_CHOICE" = "xlibre" ] || [ "$XSERVER_CHOICE" = "xorg" ]; then
-        if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|XMonad|Openbox|Fluxbox|IceWM"; then
-            # User selected at least one X11 WM
-            if [ "$WM_COUNT" -eq 1 ]; then
-                # Single WM - create .xinitrc with that WM
-                WM_SINGLE="$DE_CHOICES"
-                whiptail --title "$TITLE" --msgbox \
-                    "X11 Session Setup  [12/$STEP_MAX]\n\nYou selected: $WM_SINGLE\n\nWill create .xinitrc to start with: startx" \
-                    10 70
-                USE_LIGHTDM=0
-            else
-                # Multiple WMs - ask user preference
-                _display=$(whiptail --title "$TITLE" --menu \
-                    "X11 Session Manager  [12/$STEP_MAX]\n\nYou selected multiple window managers.\nHow do you want to start X11?" 14 70 2 \
-                    "startx"   "Use startx — select WM at login" \
-                    "lightdm"  "Use LightDM — graphical login with WM selection" \
+    if [ "$XSERVER_CHOICE" != "none" ] && [ "$GREETER_CHOICE" = "none" ]; then
+        if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|herbstluftwm|XMonad|Openbox|Fluxbox|IceWM|Moksha"; then
+            if [ "$WM_COUNT" -gt 1 ]; then
+                _primary=$(whiptail --title "$TITLE" --menu \
+                    "Primary Window Manager  [12/$STEP_MAX]\n\nMultiple X11 WMs selected with no greeter.\nWhich WM should startx launch by default?" 14 70 10 \
+                    $(echo "$DE_CHOICES" | tr ' ' '\n' | grep -vE "Sway|Hyprland|niri|river|wayfire|labwc|CLI" | head -10 | sed 's/\(.*\)/\1 "\1"/' | tr '\n' ' ') \
                     3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-                
-                if [ "$_display" = "lightdm" ]; then
-                    USE_LIGHTDM=1
-                    whiptail --title "$TITLE" --msgbox \
-                        "LightDM Setup\n\nLightDM will be installed and configured.\nYou can select your WM at the login screen." \
-                        9 70
-                else
-                    USE_LIGHTDM=0
-                    # Ask for primary WM
-                    _primary=$(whiptail --title "$TITLE" --menu \
-                        "Primary Window Manager  [12/$STEP_MAX]\n\nSelect your default WM when using startx:" 13 70 10 \
-                        $(echo "$DE_CHOICES" | tr ' ' '\n' | head -10 | sed 's/\(.*\)/\1 "\1"/' | tr '\n' ' ') \
-                        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-                    PRIMARY_WM="$_primary"
-                fi
+                PRIMARY_WM="$_primary"
+            else
+                PRIMARY_WM=""
             fi
-        else
-            USE_LIGHTDM=0
         fi
     else
-        # Wayland only or CLI - no X11 needed
-        USE_LIGHTDM=0
+        PRIMARY_WM=""
     fi
     STEP=$(( STEP + 1 )) ;;
 
@@ -858,7 +802,7 @@ setup_x11_sessions() {
     
     # Check if this is a bare WM (not a full DE) - only bare WMs need dbus-run-session
     _is_bare_wm=0
-    for _wm in dwm i3 bspwm XMonad Openbox Fluxbox IceWM; do
+    for _wm in dwm i3 bspwm herbstluftwm XMonad Openbox Fluxbox IceWM; do
         if [ "$_default_wm" = "$_wm" ]; then
             _is_bare_wm=1
             break
@@ -1279,7 +1223,7 @@ fi
 
 # icewm doesnt need mesa/llvm so skip gpu entirely to save ~200mb
 BARE_WM_ONLY=1
-for _de in Plasma XFCE LXQt Moksha Hyprland i3 XMonad Openbox Fluxbox; do
+for _de in Plasma XFCE LXQt Moksha Hyprland Sway niri river wayfire labwc bspwm herbstluftwm dwm i3 XMonad Openbox Fluxbox; do
     echo "$DE_CHOICES" | grep -qw "$_de" && BARE_WM_ONLY=0 && break
 done
 [ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
@@ -1423,7 +1367,6 @@ gauge 20 "Installing base system (this takes a while)..."
 if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
     EXTRA_PKGS="snapper snap-pac $(svc_pkg snapper) $EXTRA_PKGS"
 fi
-
 _do_basestrap() {
     local _k="$1"
     basestrap /mnt \
@@ -1490,7 +1433,7 @@ elif [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
     # eCryptfs home directory encryption setup
     echo "==> Installing eCryptfs for home directory encryption..."
     artix-chroot /mnt pacman -S --noconfirm ecryptfs-utils || true
-
+    
     # Set up mount options for encrypted home
     echo "==> eCryptfs setup complete. User will set up encrypted home on first login."
     echo "    Run: mount -t ecryptfs ~/.Private ~/.Private"
@@ -1602,28 +1545,50 @@ artix-chroot /mnt bash -c "echo '$LOCALE UTF-8' >> /etc/locale.gen && locale-gen
 artix-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
 gauge 45 "Setting timezone..."
 artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime && hwclock --systohc"
-
 # keyboard layout
 # Map X11 layout name to vconsole keymap (they differ for some layouts)
 case "$KB_LAYOUT" in
-    us-intl)   VC_KEYMAP="us" ;;
+    us-intl) VC_KEYMAP="us" ;;
     cz-qwerty) VC_KEYMAP="cz-qwerty" ;;
-    fr-bepo)   VC_KEYMAP="fr-bepo" ;;
-    br-abnt2)  VC_KEYMAP="br-abnt2" ;;
+    fr-bepo) VC_KEYMAP="fr-bepo" ;;
+    br-abnt2) VC_KEYMAP="br-abnt2" ;;
     de-latin1) VC_KEYMAP="de-latin1" ;;
-    jp106)     VC_KEYMAP="jp106" ;;
-    *)         VC_KEYMAP="$KB_LAYOUT" ;;
+    jp106) VC_KEYMAP="jp106" ;;
+    workman) VC_KEYMAP="us" ;; # There's no vconsole keymap for workman
+    *) VC_KEYMAP="$KB_LAYOUT" ;;
 esac
-cat > /mnt/etc/vconsole.conf << EOF
+cat >/mnt/etc/vconsole.conf <<EOF
 KEYMAP=$VC_KEYMAP
 FONT=default
 EOF
+
+# Some keyboard layouts are a variant of another layout
+# This isn't required to set for some layouts, but is generally recommended
+# See man xkeyboard-config, ~line 180
+XKB_VARIANT="" # An empty string sets the default variant
+case "$KB_LAYOUT" in
+    workman)
+        XKB_VARIANT="workman"
+        KB_LAYOUT="us"
+        ;;
+    dvorak)
+        XKB_VARIANT="dvorak"
+        KB_LAYOUT="us"
+        ;;
+    colemak)
+        XKB_VARIANT="colmak"
+        KB_LAYOUT="us"
+        ;;
+    *) XKB_VARIANT="" ;;
+esac
+
 mkdir -p /mnt/etc/X11/xorg.conf.d
-cat > /mnt/etc/X11/xorg.conf.d/00-keyboard.conf << KBEOF
+cat >/mnt/etc/X11/xorg.conf.d/00-keyboard.conf <<KBEOF
 Section "InputClass"
     Identifier "system-keyboard"
     MatchIsKeyboard "on"
     Option "XkbLayout" "$KB_LAYOUT"
+    Option "XkbVariant" "$XKB_VARIANT" 
 EndSection
 KBEOF
 
@@ -1694,11 +1659,8 @@ chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 # =========================
 # PIPEWIRE AUTOSTART (only for DEs that use audio)
 # =========================
-AUDIO_DES_CHECK="Plasma XFCE LXQt Moksha Cosmic Hyprland"
 NEED_AUDIO=0
-for _de in $AUDIO_DES_CHECK; do
-    echo "$DE_CHOICES" | grep -qw "$_de" && NEED_AUDIO=1 && break
-done
+[ "$INSTALL_TYPE" = "DE" ] && [ "$AUDIO_DAEMON" != "none" ] && [ "$AUDIO_DAEMON" != "alsa" ] && NEED_AUDIO=1
 
 mkdir -p /mnt/usr/local/bin
 if [ "$NEED_AUDIO" = "1" ] && [ "$AUDIO_DAEMON" = "pipewire" ]; then
@@ -1740,7 +1702,7 @@ Exec=/usr/local/bin/start-pipewire
 X-KDE-autostart-phase=1
 EOF
 
-fi# Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
+fi # Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
 # in that directory into broken .desktop files pointing to wrong paths
 
 if echo "$DE_CHOICES" | grep -qw "Moksha"; then
@@ -1751,24 +1713,24 @@ Type=Application
 Name=PipeWire
 Exec=/usr/local/bin/start-pipewire
 EOF
-fi
 fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # bare WMs autologin on tty1 and startx
-BARE_WMS="i3 XMonad Openbox Fluxbox IceWM"
+BARE_WMS="i3 herbstluftwm XMonad Openbox Fluxbox IceWM"
 
 # Write .desktop session files for bare WMs so DMs (lightdm, sddm) can launch them
 for _wm in $BARE_WMS; do
     if echo "$DE_CHOICES" | grep -qw "$_wm"; then
         mkdir -p /mnt/usr/share/xsessions
         case "$_wm" in
-            i3)      _wm_exec="i3" ;;
-            XMonad)  _wm_exec="xmonad" ;;
-            Openbox) _wm_exec="openbox-session" ;;
-            Fluxbox) _wm_exec="startfluxbox" ;;
-            IceWM)   _wm_exec="icewm-session" ;;
+            i3)             _wm_exec="i3" ;;
+            herbstluftwm)   _wm_exec="herbstluftwm" ;;
+            XMonad)         _wm_exec="xmonad" ;;
+            Openbox)        _wm_exec="openbox-session" ;;
+            Fluxbox)        _wm_exec="startfluxbox" ;;
+            IceWM)          _wm_exec="icewm-session" ;;
         esac
         cat > "/mnt/usr/share/xsessions/${_wm}.desktop" << EOF
 [Desktop Entry]
@@ -1894,26 +1856,25 @@ EOF
 fi
 
 gauge 65 "Installing desktop environment..."
-# DM priority: Cosmic/Hyprland need greetd, Plasma needs sddm, rest use lightdm
-# greetd > sddm > lightdm — heavier DMs override lighter ones
-if echo "$DE_CHOICES" | grep -qwE "Cosmic|Hyprland"; then
-    DM="greetd"
-elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
+# Determine DM based on GREETER_CHOICE from step 9
+# Full DEs that mandate their own DM still override
+case "$GREETER_CHOICE" in
+    lightdm-gtk|lightdm-slick)  DM="lightdm" ;;
+    sddm)                        DM="sddm" ;;
+    tuigreet|regreet|nwg-hello)  DM="greetd" ;;
+    *)                           DM="" ;;
+esac
+# Full DEs always override user greeter choice with their preferred DM
+if echo "$DE_CHOICES" | grep -qw "Plasma"; then
     DM="sddm"
 elif echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|Moksha"; then
-    DM="lightdm"
-else
-    DM=""
+    [ "$DM" = "" ] && DM="lightdm"
 fi
 
-# Setup X11 WM sessions for bare window managers
-if [ "$XSERVER_CHOICE" = "xlibre" ] || [ "$XSERVER_CHOICE" = "xorg" ]; then
-    if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|XMonad|Openbox|Fluxbox|IceWM"; then
-        setup_x11_sessions "$DE_CHOICES" "$USE_LIGHTDM" "$PRIMARY_WM"
-        # If user chose lightdm for WM management, use that as DM
-        if [ "$USE_LIGHTDM" = "1" ]; then
-            DM="lightdm"
-        fi
+# Setup X11 .xinitrc for bare WMs (used when no greeter, or as fallback)
+if [ "$XSERVER_CHOICE" != "none" ]; then
+    if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|herbstluftwm|XMonad|Openbox|Fluxbox|IceWM|Moksha"; then
+        setup_x11_sessions "$DE_CHOICES" "0" "$PRIMARY_WM"
     fi
 fi
 
@@ -1971,7 +1932,7 @@ for DE in $DE_CHOICES; do
             artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland || { _de_ok=0; }
             if [ "$_de_ok" = "1" ]; then
                 mkdir -p /mnt/home/"$USERNAME"/.config/hypr
-                cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
+                cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << HYPREOF
 $([ "$AUDIO_DAEMON" = "pipewire" ] && echo "exec-once = /usr/local/bin/start-pipewire")
 HYPREOF
                 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
@@ -1997,10 +1958,74 @@ EOF
             artix-chroot /mnt pacman -S --noconfirm bspwm sxhkd xterm dmenu rofi polybar || _de_ok=0
             mkdir -p /mnt/home/"$USERNAME"/.config/{bspwm,sxhkd,polybar}
             ;;
+        herbstluftwm)
+            artix-chroot /mnt pacman -S --noconfirm herbstluftwm xterm dmenu || _de_ok=0
+            ;;
         Sway)
-            # Sway is i3-like on Wayland
             artix-chroot /mnt pacman -S --noconfirm sway waybar swaybg xdg-desktop-portal-wlr bemenu || _de_ok=0
-            mkdir -p /mnt/home/"$USERNAME"/.config/sway
+            mkdir -p /mnt/home/"$USERNAME"/.config/sway /mnt/usr/share/wayland-sessions
+            cat > /mnt/usr/share/wayland-sessions/sway.desktop << 'EOF'
+[Desktop Entry]
+Name=Sway
+Comment=An i3-compatible Wayland compositor
+Exec=sway
+Type=Application
+EOF
+            ;;
+        niri)
+            artix-chroot /mnt pacman -S --noconfirm niri xdg-desktop-portal-gnome waybar swaybg bemenu || _de_ok=0
+            mkdir -p /mnt/home/"$USERNAME"/.config/niri /mnt/usr/share/wayland-sessions
+            cat > /mnt/usr/share/wayland-sessions/niri.desktop << 'EOF'
+[Desktop Entry]
+Name=niri
+Comment=Scrollable-tiling Wayland compositor
+Exec=niri-session
+Type=Application
+EOF
+            ;;
+        river)
+            # river from galaxy repo
+            if ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf; then
+                printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+                artix-chroot /mnt pacman -Sy --noconfirm
+            fi
+            artix-chroot /mnt pacman -S --noconfirm river waybar swaybg bemenu xdg-desktop-portal-wlr || _de_ok=0
+            mkdir -p /mnt/usr/share/wayland-sessions
+            cat > /mnt/usr/share/wayland-sessions/river.desktop << 'EOF'
+[Desktop Entry]
+Name=river
+Comment=Dynamic tiling Wayland compositor
+Exec=river
+Type=Application
+EOF
+            ;;
+        wayfire)
+            artix-chroot /mnt pacman -S --noconfirm wayfire waybar swaybg bemenu xdg-desktop-portal-wlr wcm || _de_ok=0
+            mkdir -p /mnt/home/"$USERNAME"/.config /mnt/usr/share/wayland-sessions
+            cat > /mnt/usr/share/wayland-sessions/wayfire.desktop << 'EOF'
+[Desktop Entry]
+Name=Wayfire
+Comment=3D Wayland compositor
+Exec=wayfire
+Type=Application
+EOF
+            ;;
+        labwc)
+            # labwc — openbox-like Wayland compositor, from Galaxy repo
+            if ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf; then
+                printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+                artix-chroot /mnt pacman -Sy --noconfirm
+            fi
+            artix-chroot /mnt pacman -S --noconfirm labwc xdg-desktop-portal-wlr \
+                waybar swaybg bemenu || _de_ok=0
+            mkdir -p /mnt/home/"$USERNAME"/.config/labwc /mnt/usr/share/wayland-sessions
+            cat > /mnt/usr/share/wayland-sessions/labwc.desktop << 'EOF'
+[Desktop Entry]
+Name=labwc
+Comment=Openbox-like Wayland compositor
+Exec=labwc
+Type=Application
+EOF
             ;;
         dwm)
             # dwm requires manual building and patching — complex for installer
@@ -2016,7 +2041,7 @@ done
 
 # write .xinitrc for bare WMs — done after loop so all WMs are installed
 BARE_WMS_SELECTED=""
-for _wm in i3 XMonad Openbox Fluxbox IceWM; do
+for _wm in i3 herbstluftwm XMonad Openbox Fluxbox IceWM; do
     echo "$DE_CHOICES" | grep -qw "$_wm" && BARE_WMS_SELECTED="$BARE_WMS_SELECTED $_wm"
 done
 BARE_WMS_SELECTED="${BARE_WMS_SELECTED# }"
@@ -2024,11 +2049,12 @@ BARE_WMS_SELECTED="${BARE_WMS_SELECTED# }"
 if [ -n "$BARE_WMS_SELECTED" ]; then
     wm_exec() {
         case "$1" in
-            i3)      echo "exec i3" ;;
-            XMonad)  echo "exec xmonad" ;;
-            Openbox) echo "exec openbox-session" ;;
-            Fluxbox) echo "exec startfluxbox" ;;
-            IceWM)   echo "exec icewm-session" ;;
+            i3)             echo "exec i3" ;;
+            herbstluftwm)   echo "exec herbstluftwm" ;;
+            XMonad)         echo "exec xmonad" ;;
+            Openbox)        echo "exec openbox-session" ;;
+            Fluxbox)        echo "exec startfluxbox" ;;
+            IceWM)          echo "exec icewm-session" ;;
         esac
     }
     WM_COUNT=$(echo "$BARE_WMS_SELECTED" | wc -w)
@@ -2063,37 +2089,101 @@ WMPICKER
 fi
 
 if [ -n "$DM" ]; then
-    if [[ "$DM" == "greetd" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm greetd "$(svc_pkg greetd)"
-        mkdir -p /mnt/etc/greetd
-        if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-            # Cosmic owns greetd — its own greeter handles session selection
-            cat > /mnt/etc/greetd/config.toml << 'EOF'
+    case "$DM" in
+        greetd)
+            artix-chroot /mnt pacman -S --noconfirm greetd "$(svc_pkg greetd)"
+            mkdir -p /mnt/etc/greetd
+
+            # Install the chosen greeter package
+            case "$GREETER_CHOICE" in
+                tuigreet)
+                    artix-chroot /mnt pacman -S --noconfirm greetd-tuigreet
+                    # Find first installed session for default
+                    _default_sess=$(ls /mnt/usr/share/wayland-sessions/*.desktop /mnt/usr/share/xsessions/*.desktop 2>/dev/null | head -1 | xargs basename -s .desktop 2>/dev/null || echo "bash")
+                    cat > /mnt/etc/greetd/config.toml << EOF
 [terminal]
 vt = 1
 
 [default_session]
-command = "cosmic-comp cosmic-greeter"
-user = "cosmic-greeter"
+command = "tuigreet --time --remember --sessions /usr/share/wayland-sessions:/usr/share/xsessions"
+user = "greeter"
 EOF
-        else
-            # Hyprland only (or Hyprland + bare WMs — land in Hyprland by default)
-            cat > /mnt/etc/greetd/config.toml << EOF
+                    ;;
+                regreet)
+                    # regreet is in galaxy repo
+                    if ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf; then
+                        printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+                        artix-chroot /mnt pacman -Sy --noconfirm
+                    fi
+                    artix-chroot /mnt pacman -S --noconfirm greetd-regreet
+                    cat > /mnt/etc/greetd/config.toml << 'EOF'
 [terminal]
 vt = 1
 
 [default_session]
-command = "Hyprland"
+command = "regreet"
+user = "greeter"
+EOF
+                    ;;
+                nwg-hello)
+                    if ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf; then
+                        printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+                        artix-chroot /mnt pacman -Sy --noconfirm
+                    fi
+                    artix-chroot /mnt pacman -S --noconfirm nwg-hello
+                    cat > /mnt/etc/greetd/config.toml << 'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "nwg-hello"
+user = "greeter"
+EOF
+                    ;;
+                *)
+                    # Fallback: agreety (built-in minimal TUI greeter)
+                    artix-chroot /mnt pacman -S --noconfirm greetd-agreety
+                    _first_wayland=$(ls /mnt/usr/share/wayland-sessions/*.desktop 2>/dev/null | head -1 | xargs basename -s .desktop 2>/dev/null)
+                    _sess="${_first_wayland:-Hyprland}"
+                    cat > /mnt/etc/greetd/config.toml << EOF
+[terminal]
+vt = 1
+
+[default_session]
+command = "${_sess}"
 user = "$USERNAME"
 EOF
-        fi
-    elif [[ "$DM" == "sddm" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm sddm "$(svc_pkg sddm)"
-        # sddm picks up all installed .desktop session files automatically
-    elif [[ "$DM" == "lightdm" ]]; then
-        artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-gtk-greeter "$(svc_pkg lightdm)"
-        # lightdm picks up all installed .desktop session files automatically
-    fi
+                    ;;
+            esac
+            # Create greeter user if needed (tuigreet/regreet require it)
+            artix-chroot /mnt id greeter &>/dev/null || \
+                artix-chroot /mnt useradd -M -G video greeter 2>/dev/null || true
+            ;;
+        sddm)
+            artix-chroot /mnt pacman -S --noconfirm sddm "$(svc_pkg sddm)"
+            # sddm auto-picks up all .desktop session files
+            ;;
+        lightdm)
+            artix-chroot /mnt pacman -S --noconfirm lightdm "$(svc_pkg lightdm)"
+            case "$GREETER_CHOICE" in
+                lightdm-slick)
+                    if ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf; then
+                        printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+                        artix-chroot /mnt pacman -Sy --noconfirm
+                    fi
+                    artix-chroot /mnt pacman -S --noconfirm lightdm-slick-greeter
+                    artix-chroot /mnt bash -c \
+                        "sed -i 's/^#*greeter-session=.*/greeter-session=slick-greeter/' /etc/lightdm/lightdm.conf"
+                    ;;
+                *)
+                    # Default: gtk greeter
+                    artix-chroot /mnt pacman -S --noconfirm lightdm-gtk-greeter
+                    artix-chroot /mnt bash -c \
+                        "sed -i 's/^#*greeter-session=.*/greeter-session=lightdm-gtk-greeter/' /etc/lightdm/lightdm.conf"
+                    ;;
+            esac
+            ;;
+    esac
 fi
 
 
@@ -2243,7 +2333,7 @@ case "$BOOT" in
         [ "$DUALBOOT" = "1" ] && { umount /mnt/sys /mnt/proc /mnt/dev 2>/dev/null || true; }
         ;;
     limine)
-        artix-chroot /mnt pacman -S --noconfirm limine efibootmgr limine-mkinitcpio-hook limine-snapper-sync
+        artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
 
         # Get the EFI partition number from its device path
         EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
@@ -2306,7 +2396,6 @@ find /.snapshots -maxdepth 2 -name info.xml 2>/dev/null | sort -rV | head -10 | 
 done >> "$CONF"
 LSCRIPT
             chmod +x /mnt/usr/local/bin/limine-snapshot-update
-
             mkdir -p /mnt/etc/snapper/hooks/post
             cat > /mnt/etc/snapper/hooks/post/limine-snapshot-update << 'HOOK'
 #!/bin/bash
@@ -2330,7 +2419,6 @@ HOOK
         _INITRD="initrd=/${UCODE}.img initrd=/initramfs-$FIRST_KERNEL.img"
         _btrfs_flag=""
         [ "$FS" = "btrfs" ] && _btrfs_flag=" rootflags=subvol=@"
-
         if [ "$ENCRYPT" = "1" ]; then
             printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet%s %s"\n' \
                 "$LUKS_CMDLINE" "$_btrfs_flag" "$_INITRD" > /mnt/boot/refind_linux.conf
@@ -2338,7 +2426,6 @@ HOOK
             printf '"Boot with standard options"  "root=UUID=%s rw quiet%s %s"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/$INIT%s %s"\n"Boot with minimal options"   "root=UUID=%s rw%s %s"\n' \
                 "$ROOT_UUID" "$_btrfs_flag" "$_INITRD" "$ROOT_UUID" "$_btrfs_flag" "$_INITRD" "$ROOT_UUID" "$_btrfs_flag" "$_INITRD" > /mnt/boot/refind_linux.conf
         fi
-
         if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
             mkdir -p /mnt/etc/snapper/hooks/post
             cat > /mnt/etc/snapper/hooks/post/refind-snapshot-update << 'HOOK'
@@ -2361,10 +2448,16 @@ esac
 
 gauge 100 "Installation complete!"
 
+# No AUR helper in most repos - users can install manually if needed
+# Install yay from CachyOS repo if CachyOS is enabled
+if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
+    echo "==> Installing yay from CachyOS repo..."
+    artix-chroot /mnt pacman -S --noconfirm yay 2>/dev/null || \
+        echo "==> Warning: yay not found in CachyOS repo — install manually after boot"
+fi
 # Unmount filesystems before final menu to prevent lockups
 umount -R /mnt 2>/dev/null || true
 
-# No AUR helper - users can install manually if needed
 
 _end=$(whiptail --title "$TITLE" --menu \
     "Installation complete!\n\nWhat would you like to do?" \
