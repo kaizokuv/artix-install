@@ -17,16 +17,22 @@ trap 'echo ""
        echo "Cleaning up mounts..."
        umount -R /mnt 2>/dev/null || true
        cryptsetup close cryptroot 2>/dev/null || true
+       command -v zpool >/dev/null 2>&1 && zpool export -a 2>/dev/null || true
        echo ""
        echo "To retry, run: bash artix-install.sh"
        echo ""
        exit 1' ERR
+
+# Capture the main ERR trap so temporary trap overrides can restore it afterwards
+_MAIN_ERR_TRAP=$(trap -p ERR | sed "s/^trap -- '//; s/' ERR\$//")
 
 # unmount/cleanup everything from a previous run so the script is re-runnable
 swapoff -a 2>/dev/null || true
 umount -R /mnt 2>/dev/null || true
 # close any leftover LUKS mapping
 cryptsetup close cryptroot 2>/dev/null || true
+# export any imported ZFS pool from a previous run
+command -v zpool >/dev/null 2>&1 && zpool export -a 2>/dev/null || true
 
 # =========================
 # ROOT CHECK
@@ -81,6 +87,7 @@ if [ "${1:-}" = "--test" ]; then
     ENABLE_ARCH=0
     ENABLE_GALAXY=0
     ENABLE_CACHYOS=0
+    INSTALL_YAY=0
     BTRFS_SNAPSHOTS=0
     # partition layout
     USE_LIGHTDM=0
@@ -184,6 +191,7 @@ MULTILIB=0
 ENABLE_ARCH=0
 ENABLE_GALAXY=0
 ENABLE_CACHYOS=0
+INSTALL_YAY=0
 BTRFS_SNAPSHOTS=0
 
 USE_LIGHTDM=0
@@ -310,10 +318,14 @@ case "$STEP" in
         "zh_CN.UTF-8" "Chinese (Simplified)" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     LOCALE="$_v"
-    # Try to auto-detect timezone from IP geolocation (non-blocking, silent fail)
+    # Try to auto-detect timezone + country from IP geolocation (non-blocking, silent fail)
     _tz_auto=""
     if command -v curl &>/dev/null; then
-        _tz_auto=$(timeout 3 curl -s "https://ipapi.co/json/" 2>/dev/null | grep -o '"timezone":"[^"]*' | cut -d'"' -f4) || true
+        _geo_json=$(timeout 3 curl -s "https://ipapi.co/json/" 2>/dev/null) || true
+        _tz_auto=$(printf '%s' "$_geo_json" | grep -o '"timezone":"[^"]*' | cut -d'"' -f4) || true
+        # Save country code globally so reflector can prioritise local mirrors
+        GEO_CC=$(printf '%s' "$_geo_json" | grep -o '"country_code":"[^"]*' | cut -d'"' -f4) || true
+        unset _geo_json
     fi
     _tz_default="UTC"
     [ -n "$_tz_auto" ] && _tz_default="$_tz_auto"
@@ -692,18 +704,23 @@ case "$STEP" in
 
 13) # Extra repos
     _repos=$(whiptail --title "$TITLE" --checklist \
-        "Extra Repositories  [14/$STEP_MAX]" \
-        14 72 4 \
+        "Extra Repositories  [13/$STEP_MAX]" \
+        15 72 5 \
         "multilib"  "lib32 — Steam, Wine, 32-bit apps"              OFF \
         "arch"      "Arch [extra] — wider package selection"        OFF \
         "galaxy"    "Artix galaxy — community packages"             OFF \
         "cachyos"   "CachyOS — performance packages + kernels"     OFF \
+        "yay"       "yay AUR helper (binary from CachyOS repo)"     OFF \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     _repos=$(echo "$_repos" | tr -d '"')
     echo "$_repos" | grep -qw multilib && MULTILIB=1      || MULTILIB=0
     echo "$_repos" | grep -qw arch     && ENABLE_ARCH=1   || ENABLE_ARCH=0
     echo "$_repos" | grep -qw galaxy   && ENABLE_GALAXY=1 || ENABLE_GALAXY=0
     echo "$_repos" | grep -qw cachyos  && ENABLE_CACHYOS=1 || ENABLE_CACHYOS=0
+    echo "$_repos" | grep -qw yay      && INSTALL_YAY=1    || INSTALL_YAY=0
+    # yay is shipped as a prebuilt binary in the CachyOS repo, so installing it
+    # requires that repo to be enabled in the target system.
+    [ "$INSTALL_YAY" = "1" ] && ENABLE_CACHYOS=1
     STEP=$(( STEP + 1 )) ;;
 
 14) # Network
@@ -809,41 +826,30 @@ setup_x11_sessions() {
         fi
     done
     
-    # Create .xinitrc in user home
-    artix-chroot /mnt bash << XINITRC_SETUP
-# Create .xinitrc for user
-mkdir -p /home/$USERNAME
-cat > /home/$USERNAME/.xinitrc << 'EOF'
-#!/bin/bash
-# Artix auto-generated .xinitrc
-
-EOF
-
-# Only add dbus-run-session for bare window managers, not full DEs
-if [ "$_is_bare_wm" = "1" ]; then
-    cat >> /home/$USERNAME/.xinitrc << 'EOF'
-# Start D-Bus session for standalone WM
-exec dbus-run-session $_default_wm
-EOF
-else
-    cat >> /home/$USERNAME/.xinitrc << 'EOF'
-# Direct WM execution (DE handles D-Bus)
-exec $_default_wm
-EOF
-fi
-
-chmod 755 /home/$USERNAME/.xinitrc
-chown $USERNAME:$USERNAME /home/$USERNAME/.xinitrc
-
-# If multiple WMs, add menu comments
-if [ "$WM_COUNT" -gt 1 ]; then
-    cat >> /home/$USERNAME/.xinitrc << 'EOF'
-# Other available WMs: $(echo "$_wm_list" | tr ' ' ', ')
-# Edit this file to switch or use: startx -- -e <wm_name>
-EOF
-fi
-
-XINITRC_SETUP
+    # Create .xinitrc in user home — written directly on host with correct
+    # expansion. (The previous nested-heredoc approach wrote literal
+    # "$_default_wm" into the file because the inner heredocs were quoted.)
+    mkdir -p "/mnt/home/$USERNAME"
+    local _wm_count
+    _wm_count=$(echo "$_wm_list" | wc -w)
+    {
+        echo '#!/bin/bash'
+        echo '# Artix auto-generated .xinitrc'
+        echo ''
+        if [ "$_is_bare_wm" = "1" ]; then
+            echo '# Start D-Bus session for standalone WM'
+            echo "exec dbus-run-session $_default_wm"
+        else
+            echo '# Direct WM execution (DE handles D-Bus)'
+            echo "exec $_default_wm"
+        fi
+        if [ "$_wm_count" -gt 1 ]; then
+            echo "# Other available WMs: $(echo "$_wm_list" | tr ' ' ', ')"
+            echo '# Edit this file to switch or use: startx -- -e <wm_name>'
+        fi
+    } > "/mnt/home/$USERNAME/.xinitrc"
+    chmod 755 "/mnt/home/$USERNAME/.xinitrc"
+    artix-chroot /mnt chown "$USERNAME:$USERNAME" "/home/$USERNAME/.xinitrc"
     
     # Configure LightDM if requested
     if [ "$_use_lightdm" = "1" ]; then
@@ -917,6 +923,7 @@ if [ "$TEST_MODE" = "0" ]; then
     fi
     _summary="$_summary✓ Hostname: $HOSTNAME\n"
     _summary="$_summary✓ User: $USERNAME\n"
+    [ "${INSTALL_YAY:-0}" = "1" ] && _summary="$_summary✓ AUR helper: yay (from CachyOS repo)\n"
     _summary="$_summary━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nReview the above. Continue?"
     
     if ! whiptail --title "$TITLE" --yesno "$_summary" 22 72; then
@@ -1297,9 +1304,16 @@ EXTRA_PKGS="${EXTRA_PKGS:-}"
 gauge 10 "Ranking mirrors for best speeds..."
 # =========================
 if command -v reflector &>/dev/null; then
-    # Use reflector to rank mirrors — try common regions for fast downloads
-    reflector --country US --country DE --country NL --country FR \
-        --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || true
+    # Prefer the geolocated country (captured during timezone detection);
+    # fall back to a spread of fast-mirror regions if geolocation was unavailable.
+    if [ -n "${GEO_CC:-}" ]; then
+        reflector --country "$GEO_CC" --country US --country DE \
+            --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || \
+        reflector --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || true
+    else
+        reflector --country US --country DE --country NL --country FR \
+            --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || true
+    fi
 else
     echo "reflector not available, using default mirror list"
 fi
@@ -1389,13 +1403,6 @@ if ! _do_basestrap "$FIRST_KERNEL"; then
     _do_basestrap linux
 fi
 
-# XanMod can't be basestrapped (AUR only) — if it's the only/first kernel,
-# basestrap used linux above; XanMod will be built in the extra kernels step
-if echo "$KERNEL_CHOICES" | grep -qw "linux-xanmod"; then
-    # ensure linux is in the mix as a fallback until xanmod is built
-    echo "$KERNEL_CHOICES" | grep -qw "linux" || KERNEL_CHOICES="linux $KERNEL_CHOICES"
-fi
-
 gauge 35 "Writing fstab..."
 if [ "${ZFS_ROOT:-0}" = "1" ]; then
     # ZFS root: generate fstab for non-ZFS mounts only, ZFS handles itself
@@ -1431,14 +1438,21 @@ if [ "$ENCRYPT" = "1" ]; then
     # Store LUKS UUID for bootloader cmdline
     LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
 elif [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
-    # eCryptfs home directory encryption setup
+    # eCryptfs home directory encryption — package + PAM auto-mount here;
+    # the actual encrypted ~/.Private is set up after the user is created.
     echo "==> Installing eCryptfs for home directory encryption..."
     artix-chroot /mnt pacman -S --noconfirm ecryptfs-utils || true
-    
-    # Set up mount options for encrypted home
-    echo "==> eCryptfs setup complete. User will set up encrypted home on first login."
-    echo "    Run: mount -t ecryptfs ~/.Private ~/.Private"
-    echo "    with passphrase: $(printf '%s' "$ECRYPTFS_PW" | head -c 20)..."
+    # Wire PAM so the encrypted private dir auto-mounts on login and unwraps
+    # the passphrase from the user's login password.
+    for pam_file in system-auth login; do
+        PAM_PATH="/mnt/etc/pam.d/$pam_file"
+        [ -f "$PAM_PATH" ] || continue
+        grep -q 'pam_ecryptfs.so' "$PAM_PATH" && continue
+        # auth: unwrap passphrase; session: mount/unmount private dir
+        sed -i '/^auth.*pam_unix.so/i auth     required pam_ecryptfs.so unwrap' "$PAM_PATH"
+        sed -i '/^session.*pam_unix.so/i session  optional pam_ecryptfs.so unwrap' "$PAM_PATH"
+        echo 'session  optional pam_ecryptfs.so' >> "$PAM_PATH"
+    done
 fi
 
 if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
@@ -1469,15 +1483,21 @@ Include = /etc/pacman.d/mirrorlist-arch
     artix-chroot /mnt pacman-key --populate archlinux
 fi
 
-[ "$MULTILIB" = "1" ] && grep -q '\[lib32\]' /mnt/etc/pacman.conf ||     { [ "$MULTILIB" = "1" ] && printf '
-[lib32]
-Include = /etc/pacman.d/mirrorlist
-' >> /mnt/etc/pacman.conf; }
+# lib32 packages live in the Arch [multilib] repo, NOT the Artix mirrorlist.
+# Needs artix-archlinux-support + the Arch mirrorlist to resolve 32-bit packages.
+if [ "$MULTILIB" = "1" ] && ! grep -q '^\[multilib\]' /mnt/etc/pacman.conf; then
+    artix-chroot /mnt pacman -S --noconfirm --needed artix-archlinux-support
+    if ! grep -q '^\[extra\]' /mnt/etc/pacman.conf; then
+        printf '\n# Arch repos\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' >> /mnt/etc/pacman.conf
+    fi
+    printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist-arch\n' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman-key --populate archlinux 2>/dev/null || true
+fi
 
-[ "$ENABLE_GALAXY" = "1" ] && ! grep -q '\[galaxy\]' /mnt/etc/pacman.conf &&     printf '
-[galaxy]
-Include = /etc/pacman.d/mirrorlist
-' >> /mnt/etc/pacman.conf
+# galaxy IS served by the Artix mirrorlist, so this Include is correct
+if [ "$ENABLE_GALAXY" = "1" ] && ! grep -q '^\[galaxy\]' /mnt/etc/pacman.conf; then
+    printf '\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+fi
 
 
 if [ "$MULTILIB" = "1" ] || [ "$ENABLE_ARCH" = "1" ] || [ "$ENABLE_GALAXY" = "1" ]; then
@@ -1503,15 +1523,24 @@ fi
 if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     _orig_siglevel=$(grep '^SigLevel' /mnt/etc/pacman.conf | head -1)
     [ -z "$_orig_siglevel" ] && _orig_siglevel="SigLevel = Required DatabaseOptional"
+    # If anything in this block fails, restore SigLevel before the ERR trap fires
+    # so we never leave the installed system with SigLevel = Never.
+    _restore_siglevel() { sed -i "s/^SigLevel.*/${_orig_siglevel}/" /mnt/etc/pacman.conf 2>/dev/null || true; }
+    trap '_restore_siglevel' ERR
     sed -i 's/^SigLevel.*/SigLevel = Never/' /mnt/etc/pacman.conf
     grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
         printf '\n[cachyos]\nServer = https://mirror.cachyos.org/repo/x86_64/cachyos\n' >> /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm
     artix-chroot /mnt pacman -S --noconfirm cachyos-keyring cachyos-mirrorlist
-    sed -i "s/^SigLevel.*/${_orig_siglevel}/" /mnt/etc/pacman.conf
+    _restore_siglevel
     artix-chroot /mnt pacman-key --populate cachyos
     sed -i '/^\[cachyos\]/{n; s|^Server = .*|Include = /etc/pacman.d/cachyos-mirrorlist|}' /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm
+    # Restore the global ERR trap (the original install-failure handler).
+    # Immediate expansion is intentional — we want the captured handler installed verbatim.
+    # shellcheck disable=SC2064
+    trap "$_MAIN_ERR_TRAP" ERR
+    unset -f _restore_siglevel
 fi
 
 # Install headers for lqx/cachyos if selected as first kernel
@@ -1528,7 +1557,7 @@ if [ "$NET_CHOICE" = "NM" ] && [ -d /etc/NetworkManager/system-connections ]; th
     chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
 fi
 
-# Extra kernels — skip silently if they fail (no AUR)
+# Extra kernels — all are repo packages (lqx/cachyos via their repos); skip on failure
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
     artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers" || echo "==> Warning: $K failed, skipping"
@@ -1581,7 +1610,7 @@ case "$KB_LAYOUT" in
         KB_LAYOUT="us"
         ;;
     colemak)
-        XKB_VARIANT="colmak"
+        XKB_VARIANT="colemak"
         KB_LAYOUT="us"
         ;;
     *) XKB_VARIANT="" ;;
@@ -1602,18 +1631,32 @@ gauge 50 "Configuring hostname..."
 echo "$HOSTNAME" > /mnt/etc/hostname
 printf "127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost\n" "$HOSTNAME" > /mnt/etc/hosts
 
-# Passwords — read directly from files inside chroot, no encoding needed
-# Passwords — pass directly as env vars, no files, no subshells
-ROOTPW_B64=$(printf '%s' "$ROOTPW" | base64)
-USERPW_B64=$(printf '%s' "$USERPW" | base64)
-# Set root password — pipe directly into chpasswd, never in bash -c where it's visible in ps aux
-printf "root:%s\n" "$(printf '%s' "$ROOTPW_B64" | base64 -d)" | artix-chroot /mnt chpasswd
+# Passwords are piped directly into chpasswd via stdin — never placed in argv
+# (so they never appear in ps aux) and never written to a file.
+# Set root password
+printf 'root:%s\n' "$ROOTPW" | artix-chroot /mnt chpasswd
 gauge 55 "Creating user account..."
 artix-chroot /mnt bash -c "useradd -m -s '$USER_SHELL' -G wheel,audio,video,storage,input '$USERNAME'"
-# Set user password — pipe directly into chpasswd, never in bash -c where it's visible in ps aux
-printf "%s:%s\n" "$USERNAME" "$(printf '%s' "$USERPW_B64" | base64 -d)" | artix-chroot /mnt chpasswd
+# Set user password
+printf '%s:%s\n' "$USERNAME" "$USERPW" | artix-chroot /mnt chpasswd
+# eCryptfs: provision the encrypted ~/.Private now that the user + password exist.
+# ecryptfs-setup-private wraps the mount passphrase with the login password so
+# PAM (configured earlier) can auto-mount it at login. Runs non-interactively.
+if [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
+    if artix-chroot /mnt bash -c "command -v ecryptfs-setup-private >/dev/null"; then
+        artix-chroot /mnt ecryptfs-setup-private --noautomount --nopwcheck \
+            --username "$USERNAME" \
+            --loginpasswd "$USERPW" \
+            --mountpasswd "$ECRYPTFS_PW" 2>/dev/null \
+            && echo "==> eCryptfs private dir provisioned for $USERNAME (auto-mounts at login)" \
+            || echo "==> Warning: ecryptfs-setup-private failed — set up ~/.Private manually after boot"
+    else
+        echo "==> Warning: ecryptfs-setup-private not found — install ecryptfs-utils and run it after boot"
+    fi
+    unset ECRYPTFS_PW
+fi
 # Securely unset password variables from memory
-unset ROOTPW USERPW ROOTPW_B64 USERPW_B64
+unset ROOTPW USERPW
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
@@ -1722,7 +1765,25 @@ fi # end NEED_AUDIO
 
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
+# Determine DM based on GREETER_CHOICE from step 9
+# Computed HERE (early) because the bare-WM autologin logic below tests $DM;
+# full DEs that mandate their own DM still override.
+case "$GREETER_CHOICE" in
+    lightdm-gtk|lightdm-slick)  DM="lightdm" ;;
+    sddm)                        DM="sddm" ;;
+    tuigreet|regreet|nwg-hello)  DM="greetd" ;;
+    *)                           DM="" ;;
+esac
+# Full DEs always override user greeter choice with their preferred DM
+if echo "$DE_CHOICES" | grep -qw "Plasma"; then
+    DM="sddm"
+elif echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|Moksha"; then
+    [ "$DM" = "" ] && DM="lightdm"
+fi
+
 # bare WMs autologin on tty1 and startx
+# (bspwm/dwm deliberately excluded — they need user config to start at all,
+#  so autologin+startx would drop into a black screen)
 BARE_WMS="i3 herbstluftwm XMonad Openbox Fluxbox IceWM"
 
 # Write .desktop session files for bare WMs so DMs (lightdm, sddm) can launch them
@@ -1861,21 +1922,7 @@ EOF
 fi
 
 gauge 65 "Installing desktop environment..."
-# Determine DM based on GREETER_CHOICE from step 9
-# Full DEs that mandate their own DM still override
-case "$GREETER_CHOICE" in
-    lightdm-gtk|lightdm-slick)  DM="lightdm" ;;
-    sddm)                        DM="sddm" ;;
-    tuigreet|regreet|nwg-hello)  DM="greetd" ;;
-    *)                           DM="" ;;
-esac
-# Full DEs always override user greeter choice with their preferred DM
-if echo "$DE_CHOICES" | grep -qw "Plasma"; then
-    DM="sddm"
-elif echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|Moksha"; then
-    [ "$DM" = "" ] && DM="lightdm"
-fi
-
+# DM was already determined earlier (before bare-WM autologin logic).
 # Setup X11 .xinitrc for bare WMs (used when no greeter, or as fallback)
 if [ "$XSERVER_CHOICE" != "none" ]; then
     if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|herbstluftwm|XMonad|Openbox|Fluxbox|IceWM|Moksha"; then
@@ -2068,9 +2115,6 @@ if [ -n "$BARE_WMS_SELECTED" ]; then
 #!/bin/sh
 rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
 xset s off; xset -dpms; xset s noblank
-xset fp+ /usr/share/fonts/TTF 2>/dev/null
-xset fp+ /usr/share/fonts/dejavu 2>/dev/null
-xset fp rehash 2>/dev/null
 XINITRC_HEADER
         if [ "$WM_COUNT" -eq 1 ]; then
             wm_exec "$BARE_WMS_SELECTED"
@@ -2146,17 +2190,19 @@ user = "greeter"
 EOF
                     ;;
                 *)
-                    # Fallback: agreety (built-in minimal TUI greeter)
+                    # Fallback: agreety (built-in minimal TUI greeter).
+                    # agreety prompts for login then launches the chosen session
+                    # via the command_prefix; it does NOT autologin.
                     artix-chroot /mnt pacman -S --noconfirm greetd-agreety
-                    _first_wayland=$(ls /mnt/usr/share/wayland-sessions/*.desktop 2>/dev/null | head -1 | xargs basename -s .desktop 2>/dev/null)
-                    _sess="${_first_wayland:-Hyprland}"
+                    _first_sess=$(ls /mnt/usr/share/wayland-sessions/*.desktop /mnt/usr/share/xsessions/*.desktop 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/\.desktop$//')
+                    _sess="${_first_sess:-Hyprland}"
                     cat > /mnt/etc/greetd/config.toml << EOF
 [terminal]
 vt = 1
 
 [default_session]
-command = "${_sess}"
-user = "$USERNAME"
+command = "agreety --cmd ${_sess}"
+user = "greeter"
 EOF
                     ;;
             esac
@@ -2383,22 +2429,22 @@ verbose: no
 EOF
 
         if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
-            cat > /mnt/usr/local/bin/limine-snapshot-update << 'LSCRIPT'
+            cat > /mnt/usr/local/bin/limine-snapshot-update << LSCRIPT
 #!/bin/bash
 CONF=/boot/limine.conf
-sed -i '/^\/Artix Linux (Snapshot/,/^$/d' "$CONF"
+sed -i '/^\/Artix Linux (Snapshot/,/^\$/d' "\$CONF"
 find /.snapshots -maxdepth 2 -name info.xml 2>/dev/null | sort -rV | head -10 | while read -r xml; do
-    num=$(basename "$(dirname "$xml")")
-    date=$(grep -oP '(?<=<date>)[^<]+' "$xml" | head -1)
-    desc=$(grep -oP '(?<=<description>)[^<]+' "$xml" | head -1)
-    label="${date:-snapshot} ${desc:+(${desc})}"
-    cmdline=$(grep -oP '(?<=cmdline: ).*' "$CONF" | head -1 | sed "s|subvol=@[^ ]*|subvol=@snapshots/$num/snapshot|")
-    printf '\n/Artix Linux (Snapshot %s — %s)\n' "$num" "$label"
+    num=\$(basename "\$(dirname "\$xml")")
+    date=\$(grep -oP '(?<=<date>)[^<]+' "\$xml" | head -1)
+    desc=\$(grep -oP '(?<=<description>)[^<]+' "\$xml" | head -1)
+    label="\${date:-snapshot} \${desc:+(\${desc})}"
+    cmdline=\$(grep -oP '(?<=cmdline: ).*' "\$CONF" | head -1 | sed "s|subvol=@[^ ]*|subvol=@snapshots/\$num/snapshot|")
+    printf '\n/Artix Linux (Snapshot %s — %s)\n' "\$num" "\$label"
     printf '    protocol: linux\n'
-    printf '    path: boot():/vmlinuz-linux\n'
-    printf '    cmdline: %s\n' "$cmdline"
-    printf '    module_path: boot():/initramfs-linux.img\n'
-done >> "$CONF"
+    printf '    path: boot():/vmlinuz-$FIRST_KERNEL\n'
+    printf '    cmdline: %s\n' "\$cmdline"
+    printf '    module_path: boot():/initramfs-$FIRST_KERNEL.img\n'
+done >> "\$CONF"
 LSCRIPT
             chmod +x /mnt/usr/local/bin/limine-snapshot-update
             mkdir -p /mnt/etc/snapper/hooks/post
@@ -2453,12 +2499,47 @@ esac
 
 gauge 100 "Installation complete!"
 
-# No AUR helper in most repos - users can install manually if needed
-# Install yay from CachyOS repo if CachyOS is enabled
-if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    echo "==> Installing yay from CachyOS repo..."
-    artix-chroot /mnt pacman -S --noconfirm yay 2>/dev/null || \
-        echo "==> Warning: yay not found in CachyOS repo — install manually after boot"
+# =========================
+# AUR HELPER (yay)
+# =========================
+# Install yay only when the user explicitly asked for it. Preferred path is the
+# prebuilt binary from the CachyOS repo (no compiling). If that repo isn't
+# available or the package is missing, fall back to building from the AUR via
+# makepkg as the unprivileged user.
+if [ "${INSTALL_YAY:-0}" = "1" ]; then
+    gauge 95 "Installing yay (AUR helper)..."
+    _yay_ok=0
+    # Path 1: prebuilt binary from CachyOS repo (already enabled in the target
+    # because selecting yay set ENABLE_CACHYOS=1 earlier).
+    if artix-chroot /mnt pacman -Si yay &>/dev/null; then
+        if artix-chroot /mnt pacman -S --noconfirm yay; then
+            _yay_ok=1
+            echo "==> yay installed from CachyOS repo"
+        fi
+    fi
+    # Path 2: fall back to building yay-bin from the AUR via makepkg as the user.
+    if [ "$_yay_ok" = "0" ]; then
+        echo "==> yay not in repos — building yay-bin from AUR via makepkg..."
+        # base-devel + git are required to build; ensure they're present
+        artix-chroot /mnt pacman -S --noconfirm --needed base-devel git || true
+        # makepkg refuses to run as root, so build as the freshly created user.
+        # doas/sudo for pacman is already configured (NOPASSWD pacman), so the
+        # dependency-install + package-install steps work non-interactively.
+        if artix-chroot /mnt bash -c "
+            set -e
+            cd /tmp
+            rm -rf yay-bin
+            sudo -u '$USERNAME' git clone https://aur.archlinux.org/yay-bin.git
+            cd yay-bin
+            sudo -u '$USERNAME' makepkg -s --noconfirm
+            pacman -U --noconfirm yay-bin-*.pkg.tar.zst
+        "; then
+            _yay_ok=1
+            echo "==> yay built and installed from AUR"
+        fi
+        artix-chroot /mnt rm -rf /tmp/yay-bin 2>/dev/null || true
+    fi
+    [ "$_yay_ok" = "0" ] && echo "==> Warning: yay install failed — install manually after boot"
 fi
 # Unmount filesystems before final menu to prevent lockups
 umount -R /mnt 2>/dev/null || true
