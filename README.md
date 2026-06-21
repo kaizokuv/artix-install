@@ -1,5 +1,3 @@
-<img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/8ecc2c34-c05e-4582-9e10-2ee3913708f8" />
-
 # artix-install
 
 > A TUI installer written in Bash for Artix Linux — minimal, tailored, and convenient.
@@ -14,74 +12,104 @@ The official installer gives you a working system. This one gives you *your* sys
 
 ## What it configures
 
+> The tables below reflect the **testing** script. The **stable** script is a
+> more conservative subset — see the notes under each table for what stable
+> leaves out.
 
-### Stable 
+### Core
+
 | Category | Options |
 |---|---|
-| **Init system** | openrc, dinit, runit, s6 |
-| **Disk & Filesystem** | ext4, btrfs, xfs, f2fs, zfs and more |
-| **Kernels** | standard, lts, zen · custom: CachyOS, Liquorix |
+| **Init system** | dinit, openrc, runit, s6 |
 | **Bootloader** | GRUB, Limine, rEFInd |
-| **Swap** | zram, swapfile, both, or none |
-| **Hardware** | Firmware, GPU drivers |
-| **Locale** | keyboard layout, locale, timezone |
-| **Audio** | PipeWire |
-| **Mirrors** | auto-picks fastest on install |
+| **Kernels** | standard, lts, zen · custom: CachyOS (`linux-cachyos`), Liquorix (`linux-lqx`) |
+| **Filesystem** | ext4, btrfs, xfs, f2fs, jfs, nilfs2, zfs¹ |
+| **Swap** | zram, swapfile, both, dedicated partition, or none |
+| **Hardware** | CPU microcode, GPU drivers, firmware auto-detection |
+| **Locale** | keyboard layout, locale, timezone (timezone auto-detected from IP) |
+| **Mirrors** | auto-ranked by speed at install time |
 | **Privilege escalation** | doas or sudo |
-| **X11 server** | Xorg or XLibre |
-| **Networking** | NetworkManager (carries live WiFi into install), iwd, dhcpcd |
-| **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox  
-| **Repos** | lib32 |
+| **X11 server** | XLibre or Xorg |
+| **Networking** | NetworkManager (carries live WiFi into the install), iwd, dhcpcd |
 
+¹ **ZFS root is experimental and may not boot** without manual post-install
+configuration (no `zfs` initramfs hook or `root=ZFS=` cmdline is set up yet).
+You are warned and asked to confirm before it is used.
 
-### Testing (on top of the stuff in stable of course)
+### Desktops, audio, repos, shells
+
 | Category | Options |
 |---|---|
-| **AUR** | yay |
-| **Greeters** | none, sddm, lightdm, tuigreet, regreet, nwg-hello, |
-| **Repos** | multilib, Arch, CachyOS, Galaxy |
-| **Shell** | bash, zsh, fish, sh |
-| **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm, labwc, niri. wayfire, herbslutwm |
+| **DE / WM** | Plasma, XFCE, LXQt, GNOME² · i3, bspwm, herbstluftwm, XMonad, Openbox, Fluxbox, IceWM, dwm³ · Sway, Hyprland, niri, river, wayfire, labwc · Moksha |
+| **Greeters** | none, LightDM (GTK / Slick), SDDM, greetd (tuigreet / ReGreet / nwg-hello) |
 | **Audio** | PipeWire, PulseAudio, ALSA |
+| **AUR helper** | yay (installed as a prebuilt binary from the CachyOS repo) |
+| **Extra repos** | multilib, Arch `extra`, CachyOS, Galaxy |
+| **Shell** | bash, zsh, fish, sh |
+
+² **GNOME** is an older, unmaintained build — Artix dropped it because upstream
+depends heavily on systemd. The installer warns you before installing it.
+³ **dwm** needs manual source patching after install; the installer only sets up
+the base packages.
+
+**Stable vs. testing:** the stable script ships a smaller, more-tested set of
+the above (fewer window managers, no AUR helper, and only the most reliable
+greeters/repos). The exact stable subset lives in `artix-install.sh`; everything
+listed in the tables is available in `artix-install-testing.sh`.
+
 ---
 
 ## Known issues
 
-- The **stable ISO does not work** with this installer — **use the weekly ISO** instead to clarify this is not our fault the stable version of the iso is just broken even with the manual installation
+- The **stable Artix ISO is currently broken** — it fails even with the official
+  manual install. **Use the weekly ISO instead.** This is an upstream ISO problem,
+  not an installer bug.
+- **ZFS root** may not boot without manual setup (see note above).
+
 ---
 
 ## Usage
 
 ### 1 — Download the weekly ISO
 
-Download the **weekly release** from the Artix Linux website — **not the stable one**.
+Grab the **weekly release** (not the stable one) from the Artix download page:
 
 https://artixlinux.org/download.php
 
 ### 2 — Flash the ISO
 
-Using `dd` (you can also use Ventoy, Balena Etcher, Rufus, Popsicle, etc.):
+Using `dd` (or Ventoy, balenaEtcher, Rufus, Popsicle, etc.):
 
 ```bash
-dd if=path/to/artix.iso of=/dev/sdX bs=4M status=progress oflag=sync
+dd if=path/to/artix.iso of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
-### 3 — Boot and connect to WiFi
+Replace `/dev/sdX` with your USB device (e.g. `/dev/sdb`) — double-check it with
+`lsblk` first, as this erases the target.
 
-Boot the ISO. Login is `root`, password is `artix`. Then connect to WiFi with:
+### 3 — Boot and connect to the internet
+
+Boot the ISO. Log in as `root` with password `artix`, then connect.
+
+For WiFi on a NetworkManager-based ISO:
 
 ```bash
 nmtui
 ```
 
+> If `nmtui` isn't available on your ISO variant, use `connmanctl` or `iwctl`
+> instead, depending on what the live image ships.
+
 ### 4 — Run the installer
 
 **Stable** — fewer features, more tested:
+
 ```bash
 curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install.sh | bash
 ```
 
 **Testing** — more features, less stability:
+
 ```bash
 curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install-testing.sh | bash
 ```
