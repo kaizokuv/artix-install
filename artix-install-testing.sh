@@ -230,6 +230,13 @@ case "$STEP" in
         "nilfs2" "NILFS2 — continuous snapshotting" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     FS="$_v"
+    if [ "$FS" = "zfs" ]; then
+        if ! whiptail --title "$TITLE" --yesno \
+            "⚠  ZFS ROOT IS EXPERIMENTAL AND MAY NOT BOOT\n\nThis installer creates a ZFS root pool but does NOT yet set up\nthe zfs mkinitcpio hook, the root=ZFS=... boot cmdline, or a\nGRUB-compatible feature set. The resulting system is likely to\nFAIL TO BOOT without manual post-install configuration.\n\nRecommended: use ext4 or btrfs instead.\n\nContinue with ZFS anyway?" \
+            16 70; then
+            continue   # re-show the filesystem menu (STEP unchanged)
+        fi
+    fi
     if [ "$FS" = "btrfs" ]; then
         if whiptail --title "$TITLE" --yesno \
             "Enable btrfs snapshots?  [3/$STEP_MAX]\n\nInstalls snapper + snap-pac.\nAuto-snapshots before pacman upgrades.\nAdds snapshot entries to the boot menu." \
@@ -1179,6 +1186,9 @@ else
         btrfs subvolume create /mnt/@var
         btrfs subvolume create /mnt/@cache
         [ "$BTRFS_SNAPSHOTS" = "1" ] && btrfs subvolume create /mnt/@snapshots
+        # Dedicated swap subvolume — kept out of @ so the swapfile is never
+        # caught in a root snapshot (btrfs forbids snapshotting active swap).
+        [[ "$SWAP" =~ Swapfile|Both ]] && btrfs subvolume create /mnt/@swap
         umount /mnt
         mount -o subvol=@,compress=zstd,noatime "$ROOT" /mnt
         mkdir -p /mnt/{home,var}
@@ -1186,6 +1196,10 @@ else
         mount -o subvol=@var,compress=zstd,noatime "$ROOT" /mnt/var
         mkdir -p /mnt/var/cache
         mount -o subvol=@cache,compress=zstd,noatime,nodatacow "$ROOT" /mnt/var/cache
+        if [[ "$SWAP" =~ Swapfile|Both ]]; then
+            mkdir -p /mnt/swap
+            mount -o subvol=@swap,noatime,nodatacow "$ROOT" /mnt/swap
+        fi
         if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
             mkdir -p /mnt/.snapshots
             mount -o subvol=@snapshots,compress=zstd,noatime "$ROOT" /mnt/.snapshots
@@ -1217,15 +1231,27 @@ done
 # swapfile
 if [[ "$SWAP" =~ Swapfile|Both ]]; then
     if [[ "$FS" == "btrfs" ]]; then
-        truncate -s 0 /mnt/swapfile
-        chattr +C /mnt/swapfile
-        fallocate -l "${SWAP_SIZE_GB}G" /mnt/swapfile
+        # btrfs swapfile lives on the dedicated @swap subvol (nodatacow, no
+        # snapshots). fallocate produces a holey file swapon refuses on btrfs,
+        # so use the dedicated helper (btrfs-progs >= 6.1) or dd-fill manually.
+        _swapfile="/mnt/swap/swapfile"
+        if btrfs filesystem mkswapfile --help &>/dev/null; then
+            btrfs filesystem mkswapfile --size "${SWAP_SIZE_GB}g" "$_swapfile"
+            swapon "$_swapfile"
+        else
+            truncate -s 0 "$_swapfile"
+            chattr +C "$_swapfile"
+            dd if=/dev/zero of="$_swapfile" bs=1M count="$SWAP_SIZE_MB" status=progress
+            chmod 600 "$_swapfile"
+            mkswap "$_swapfile"
+            swapon "$_swapfile"
+        fi
     else
         dd if=/dev/zero of=/mnt/swapfile bs=1M count="$SWAP_SIZE_MB" status=progress
+        chmod 600 /mnt/swapfile
+        mkswap /mnt/swapfile
+        swapon /mnt/swapfile  # activate so fstabgen picks it up
     fi
-    chmod 600 /mnt/swapfile
-    mkswap /mnt/swapfile
-    swapon /mnt/swapfile  # activate so fstabgen picks it up
 fi
 
 # icewm doesnt need mesa/llvm so skip gpu entirely to save ~200mb
@@ -1593,7 +1619,6 @@ case "$KB_LAYOUT" in
 esac
 cat >/mnt/etc/vconsole.conf <<EOF
 KEYMAP=$VC_KEYMAP
-FONT=default
 EOF
 
 # Some keyboard layouts are a variant of another layout
@@ -2330,10 +2355,12 @@ case "$BOOT" in
             sed -i 's/^#GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' /mnt/etc/default/grub
             grep -q 'GRUB_DISABLE_OS_PROBER' /mnt/etc/default/grub || \
                 echo 'GRUB_DISABLE_OS_PROBER=false' >> /mnt/etc/default/grub
-            # Mount other partitions so os-prober can find them
+            # Mount host pseudo-filesystems so os-prober (run by grub-mkconfig)
+            # can scan other disks. /run is needed for udev-based partition ID.
             mount --bind /dev  /mnt/dev
             mount --bind /proc /mnt/proc
             mount --bind /sys  /mnt/sys
+            mount --bind /run  /mnt/run
         fi
         if [ "$UEFI" = "1" ]; then
             artix-chroot /mnt grub-install \
@@ -2381,7 +2408,7 @@ case "$BOOT" in
         fi
         artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
         # Unmount bind mounts used by os-prober
-        [ "$DUALBOOT" = "1" ] && { umount /mnt/sys /mnt/proc /mnt/dev 2>/dev/null || true; }
+        [ "$DUALBOOT" = "1" ] && { umount /mnt/run /mnt/sys /mnt/proc /mnt/dev 2>/dev/null || true; }
         ;;
     limine)
         artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
@@ -2541,6 +2568,9 @@ if [ "${INSTALL_YAY:-0}" = "1" ]; then
     fi
     [ "$_yay_ok" = "0" ] && echo "==> Warning: yay install failed — install manually after boot"
 fi
+# Deactivate swap first — an active swapfile keeps its filesystem busy and
+# would make the recursive unmount below fail (the lockup this guards against).
+swapoff -a 2>/dev/null || true
 # Unmount filesystems before final menu to prevent lockups
 umount -R /mnt 2>/dev/null || true
 
