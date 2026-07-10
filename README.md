@@ -2,6 +2,8 @@
 
 > A TUI installer written in Bash for Artix Linux — minimal, tailored, and convenient.
 
+THIS IS A FORK FOR PULL REQUEST AND TESTING PURPOSES
+
 ---
 
 ## Why use this over the official installer?
@@ -105,13 +107,13 @@ nmtui
 **Stable** — fewer features, more tested:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install.sh | bash
+curl -sL https://raw.githubusercontent.com/kaizokuv/artix-install/main/artix-install.sh | bash
 ```
 
 **Testing** — more features, less stability:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install-testing.sh | bash
+curl -sL https://raw.githubusercontent.com/kaizokuv/artix-install/main/artix-install-testing.sh | bash
 ```
 
 ---
